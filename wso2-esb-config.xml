@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://ws.apache.org/ns/synapse">
+    <proxy name="BetawareProxy" startOnLoad="true" transports="http https">
+        <target>
+            <inSequence>
+                <property name="REST_URL_POSTFIX" scope="axis2" action="remove"/>
+                <send>
+                    <endpoint>
+                        <address uri="http://localhost:8080/api/v1"/>
+                    </endpoint>
+                </send>
+            </inSequence>
+            <outSequence>
+                <send/>
+            </outSequence>
+            <faultSequence>
+                <log level="error">
+                    <property name="ERROR_MESSAGE" expression="get-property('ERROR_MESSAGE')"/>
+                </log>
+                <send/>
+            </faultSequence>
+        </target>
+    </proxy>
+</definitions> 
