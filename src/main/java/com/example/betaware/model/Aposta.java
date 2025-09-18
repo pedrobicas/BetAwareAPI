@@ -34,8 +34,9 @@ public class Aposta {
     private Double valor;
 
     @NotNull(message = "O resultado é obrigatório")
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private String resultado;
+    private ResultadoAposta resultado;
 
     @NotNull(message = "A data é obrigatória")
     @Column(nullable = false)
@@ -71,14 +72,6 @@ public class Aposta {
         this.valor = valor;
     }
 
-    public @NotNull(message = "O resultado é obrigatório") ResultadoAposta getResultado() {
-        return ResultadoAposta.valueOf(resultado);
-    }
-
-    public void setResultado(@NotNull(message = "O resultado é obrigatório") ResultadoAposta resultado) {
-        this.resultado = resultado.name();
-    }
-
     public @NotNull(message = "A data é obrigatória") LocalDateTime getData() {
         return data;
     }
@@ -95,6 +88,20 @@ public class Aposta {
         this.usuario = usuario;
     }
 
+    public String getCategoria() {
+        return categoria;
+    }
 
+    public void setCategoria(String categoria) {
+        this.categoria = categoria;
+    }
+
+    public @NotNull(message = "O resultado é obrigatório") ResultadoAposta getResultado() {
+        return resultado;
+    }
+
+    public void setResultado(@NotNull(message = "O resultado é obrigatório") ResultadoAposta resultado) {
+        this.resultado = resultado;
+    }
 }
 

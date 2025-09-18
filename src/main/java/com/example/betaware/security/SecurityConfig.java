@@ -44,11 +44,13 @@ public class SecurityConfig {
                                 "/swagger-ui/**",
                                 "/h2-console/**",
                                 "/v1/auth/**",
-                                "/v1/health"
+                                "/v1/health",
+                                "/v1/debug/**"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
-                .headers(AbstractHttpConfigurer::disable)
+                .headers(headers -> headers.frameOptions(frameOptions -> frameOptions.disable()))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
@@ -58,11 +60,11 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(Arrays.asList(
-            "http://localhost:4200", // Frontend Angular
-            "http://localhost:8081", // Expo Dev Server
-            "exp://localhost:8081", // Expo
-            "exp://192.168.0.*:8081", // Expo na rede local
-            "exp://10.0.2.2:8081" // Expo no emulador Android
+            "http://localhost:4200",
+            "http://localhost:8081",
+            "exp://localhost:8081",
+            "exp://192.168.0.*:8081",
+            "exp://10.0.2.2:8081"
         ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));

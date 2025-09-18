@@ -3,6 +3,7 @@ package com.example.betaware.service;
 import com.example.betaware.dto.JwtResponse;
 import com.example.betaware.dto.LoginRequest;
 import com.example.betaware.dto.RegisterRequest;
+import com.example.betaware.exception.UsuarioJaExisteException;
 import com.example.betaware.model.Usuario;
 import com.example.betaware.model.enums.Perfil;
 import com.example.betaware.repository.UsuarioRepository;
@@ -48,28 +49,41 @@ public class AuthService {
 
     @Transactional
     public void register(RegisterRequest registerRequest) {
-        if (usuarioRepository.existsByUsername(registerRequest.getUsername())) {
-            throw new RuntimeException("Username já está em uso");
+        try {
+            // username ja existe
+            if (usuarioRepository.existsByUsername(registerRequest.getUsername())) {
+                throw new UsuarioJaExisteException("Username já está em uso");
+            }
+
+            // email ja existe
+            if (usuarioRepository.existsByEmail(registerRequest.getEmail())) {
+                throw new UsuarioJaExisteException("Email já está em uso");
+            }
+
+            // CPF ja existe
+            if (usuarioRepository.existsByCpf(registerRequest.getCpf())) {
+                throw new UsuarioJaExisteException("CPF já está em uso");
+            }
+
+            // novo usuario
+            Usuario usuario = new Usuario();
+            usuario.setUsername(registerRequest.getUsername());
+            usuario.setNome(registerRequest.getNome());
+            usuario.setCpf(registerRequest.getCpf());
+            usuario.setCep(registerRequest.getCep());
+            usuario.setEndereco(registerRequest.getEndereco());
+            usuario.setSenha(passwordEncoder.encode(registerRequest.getSenha()));
+            usuario.setEmail(registerRequest.getEmail());
+            usuario.setPerfil(Perfil.USER);
+
+            // salvar o usuario no banco de dados
+            usuarioRepository.save(usuario);
+        } catch (UsuarioJaExisteException e) {
+            throw e;
+        } catch (Exception e) {
+            System.err.println("Erro ao registrar usuário: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Erro ao registrar usuário: " + e.getMessage(), e);
         }
-
-        if (usuarioRepository.existsByEmail(registerRequest.getEmail())) {
-            throw new RuntimeException("Email já está em uso");
-        }
-
-        if (usuarioRepository.existsByCpf(registerRequest.getCpf())) {
-            throw new RuntimeException("CPF já está em uso");
-        }
-
-        Usuario usuario = new Usuario();
-        usuario.setUsername(registerRequest.getUsername());
-        usuario.setNome(registerRequest.getNome());
-        usuario.setCpf(registerRequest.getCpf());
-        usuario.setCep(registerRequest.getCep());
-        usuario.setEndereco(registerRequest.getEndereco());
-        usuario.setSenha(passwordEncoder.encode(registerRequest.getSenha()));
-        usuario.setEmail(registerRequest.getEmail());
-        usuario.setPerfil(Perfil.USER);
-
-        usuarioRepository.save(usuario);
     }
 } 

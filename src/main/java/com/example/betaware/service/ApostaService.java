@@ -1,6 +1,7 @@
 package com.example.betaware.service;
 
 import com.example.betaware.dto.ApostaDTO;
+import com.example.betaware.exception.RecursoNaoEncontradoException;
 import com.example.betaware.model.Aposta;
 import com.example.betaware.model.Usuario;
 import com.example.betaware.repository.ApostaRepository;
@@ -25,7 +26,7 @@ public class ApostaService {
     @Transactional
     public ApostaDTO criarAposta(ApostaDTO apostaDTO, String username) {
         Usuario usuario = usuarioRepository.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("Usuário não encontrado"));
+                .orElseThrow(() -> new RecursoNaoEncontradoException("Usuário não encontrado"));
 
         Aposta aposta = new Aposta();
         aposta.setCategoria(apostaDTO.getCategoria());
