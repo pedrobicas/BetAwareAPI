@@ -1,0 +1,169 @@
+```plantuml
+@startuml Casos de Uso - BetAware API
+
+!theme aws-orange
+skinparam backgroundColor #F8F9FA
+skinparam actor {
+    BackgroundColor #3498DB
+    BorderColor #2C3E50
+    FontColor #FFFFFF
+}
+skinparam usecase {
+    BackgroundColor #FFFFFF
+    BorderColor #2C3E50
+    FontSize 11
+}
+
+title **Casos de Uso - BetAware API**\n**Sistema de Conscientização sobre Apostas Esportivas**
+
+' === ATORES ===
+actor "👤 Usuário\nComum" as usuario #3498DB
+actor "👑 Administrador" as admin #E74C3C
+actor "📱 App Mobile\n(React Native)" as mobile #9B59B6
+actor "💻 App Web\n(Angular)" as web #27AE60
+
+' === SISTEMA ===
+rectangle "🏦 **BetAware API**" {
+    
+    ' === AUTENTICAÇÃO E REGISTRO ===
+    package "🔐 Autenticação" #E3F2FD {
+        usecase "UC01: Registrar\nNovo Usuário" as UC01
+        usecase "UC02: Fazer Login\ne Obter JWT" as UC02
+        usecase "UC03: Validar\nToken JWT" as UC03
+    }
+    
+    ' === GESTÃO DE APOSTAS ===
+    package "🎲 Gestão de Apostas" #E8F5E8 {
+        usecase "UC04: Criar\nAposta Simulada" as UC04
+        usecase "UC05: Listar Minhas\nApostas" as UC05
+        usecase "UC06: Filtrar Apostas\nPor Período" as UC06
+        usecase "UC07: Ver Estatísticas\nDe Desempenho" as UC07
+    }
+    
+    ' === ADMINISTRAÇÃO ===
+    package "⚙️ Administração" #FFF3E0 {
+        usecase "UC08: Gerenciar\nUsuários" as UC08
+        usecase "UC09: Ver Relatórios\nGerais" as UC09
+        usecase "UC10: Monitorar\nSistema" as UC10
+    }
+    
+    ' === INFRAESTRUTURA ===
+    package "🛠️ Infraestrutura" #F3E5F5 {
+        usecase "UC11: Verificar\nSaúde da API" as UC11
+        usecase "UC12: Consultar\nDocumentação Swagger" as UC12
+        usecase "UC13: Tratar\nExceções" as UC13
+    }
+}
+
+' === BANCO DE DADOS ===
+database "🗄️ Banco H2\n(Dev/Test)" as db_h2 #FCE4EC
+database "🗄️ PostgreSQL\n(Produção)" as db_postgres #FCE4EC
+
+' === RELACIONAMENTOS PRINCIPAIS ===
+
+' Usuário Comum
+usuario --> UC01 : "Cria conta na plataforma"
+usuario --> UC02 : "Acessa o sistema" 
+usuario --> UC04 : "Simula apostas"
+usuario --> UC05 : "Consulta histórico"
+usuario --> UC06 : "Analisa período específico"
+usuario --> UC07 : "Acompanha desempenho"
+
+' Administrador
+admin --> UC02 : "Login como admin"
+admin --> UC08 : "Controle de usuários" 
+admin --> UC09 : "Análise geral do sistema"
+admin --> UC10 : "Monitoramento"
+
+' Apps Mobile e Web
+mobile --> UC01 : "Registro via app"
+mobile --> UC02 : "Login via app"
+mobile --> UC04 : "Apostas via mobile"
+mobile --> UC05 : "Consultas mobile"
+
+web --> UC01 : "Registro via web"
+web --> UC02 : "Login via web" 
+web --> UC04 : "Apostas via web"
+web --> UC05 : "Consultas web"
+web --> UC06 : "Relatórios web"
+
+' Casos de uso internos
+UC02 ..> UC03 : "<<includes>>"
+UC04 ..> UC03 : "<<includes>>"
+UC05 ..> UC03 : "<<includes>>"
+UC06 ..> UC03 : "<<includes>>"
+UC07 ..> UC03 : "<<includes>>"
+UC08 ..> UC03 : "<<includes>>"
+
+' Infraestrutura
+UC11 --> db_h2 : "Verifica conexão"
+UC04 --> db_h2 : "Persiste apostas"
+UC05 --> db_h2 : "Consulta apostas"
+UC01 --> db_h2 : "Cadastra usuário"
+
+' === FLUXOS DETALHADOS ===
+
+note right of UC01
+    **Fluxo Principal:**
+    1. Usuário fornece dados pessoais
+    2. Sistema valida unicidade (email, CPF, username)
+    3. Senha é criptografada (BCrypt)
+    4. Usuário salvo com perfil USER
+    5. Resposta de sucesso enviada
+    
+    **Fluxos Alternativos:**
+    • Dados já existem → 409 Conflict
+    • Validação falha → 400 Bad Request
+end note
+
+note right of UC02
+    **Fluxo Principal:**
+    1. Usuário envia credenciais
+    2. Spring Security autentica
+    3. JWT é gerado e assinado
+    4. Token retornado com dados do usuário
+    
+    **Fluxos Alternativos:**
+    • Credenciais inválidas → 401 Unauthorized
+    • Usuário não encontrado → 404 Not Found
+end note
+
+note right of UC04
+    **Fluxo Principal:**
+    1. Token JWT validado
+    2. Dados da aposta validados
+    3. Usuário identificado pelo token
+    4. Aposta salva com data atual
+    5. DTO da aposta retornado
+    
+    **Regras de Negócio:**
+    • Valor deve ser positivo
+    • Categoria obrigatória
+    • Data não pode ser passada
+end note
+
+note bottom of UC13
+    **GlobalExceptionHandler intercepta:**
+    • MethodArgumentNotValidException → 400
+    • BadCredentialsException → 401  
+    • UsuarioJaExisteException → 409
+    • RecursoNaoEncontradoException → 404
+    • RuntimeException → 500
+    
+    **Resposta padronizada com:**
+    • Timestamp, status, erro, mensagem, path
+end note
+
+' === TECNOLOGIAS ===
+note top of "BetAware API"
+    **Stack Tecnológico:**
+    • Spring Boot 3.x
+    • Spring Security + JWT
+    • JPA/Hibernate
+    • Bean Validation
+    • Swagger/OpenAPI 3
+    • Maven
+end note
+
+@enduml
+```

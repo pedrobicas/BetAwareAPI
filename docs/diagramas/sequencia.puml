@@ -1,0 +1,176 @@
+```plantuml
+@startuml Diagrama de Sequência - BetAware API
+
+!theme aws-orange
+skinparam backgroundColor #F8F9FA
+skinparam sequence {
+    ArrowColor #2C3E50
+    ActorBorderColor #2C3E50
+    LifeLineBorderColor #3498DB
+    ParticipantBorderColor #2C3E50
+    ParticipantBackgroundColor #FFFFFF
+    ActorBackgroundColor #3498DB
+    ActorFontColor #FFFFFF
+}
+
+title **Fluxos de Sequência Principais - BetAware API**
+
+actor "👤 Cliente\n(Mobile/Web)" as client
+participant "🔐 SecurityFilter" as security
+participant "🎯 Controller" as controller  
+participant "⚙️ Service" as service
+participant "💾 Repository" as repository
+participant "🗄️ Database" as database
+participant "🛡️ JWT Provider" as jwt
+participant "⚠️ Exception Handler" as exception
+
+== **Fluxo 1: Registro de Usuário** ==
+
+client -> controller : POST /v1/auth/register\n{username, email, senha, ...}
+activate controller
+
+controller -> service : register(RegisterRequest)
+activate service
+
+service -> repository : existsByUsername(username)
+activate repository
+repository -> database : SELECT COUNT(*) FROM usuario\nWHERE username = ?
+database --> repository : 0 ou 1
+repository --> service : boolean
+
+alt Usuário já existe
+    service -> exception : throw UsuarioJaExisteException
+    exception --> client : 409 Conflict\n{"timestamp", "status", "erro"}
+else Usuário não existe
+    service -> service : passwordEncoder.encode(senha)
+    service -> repository : save(usuario)
+    repository -> database : INSERT INTO usuario VALUES(...)
+    database --> repository : Usuario salvo
+    repository --> service : Usuario
+    service --> controller : void
+    controller --> client : 200 OK
+end
+deactivate repository
+deactivate service
+deactivate controller
+
+== **Fluxo 2: Login e Autenticação** ==
+
+client -> controller : POST /v1/auth/login\n{username, senha}
+activate controller
+
+controller -> service : login(LoginRequest)
+activate service
+
+service -> service : authenticationManager.authenticate()
+service -> repository : findByUsername(username)
+activate repository
+repository -> database : SELECT * FROM usuario\nWHERE username = ?
+database --> repository : Usuario ou null
+repository --> service : Optional<Usuario>
+
+alt Credenciais válidas
+    service -> jwt : generateToken(authentication)
+    activate jwt
+    jwt --> service : String JWT Token
+    deactivate jwt
+    service --> controller : JwtResponse{token, username, nome, perfil}
+    controller --> client : 200 OK + JWT
+else Credenciais inválidas
+    service -> exception : throw BadCredentialsException
+    exception --> client : 401 Unauthorized
+end
+deactivate repository
+deactivate service
+deactivate controller
+
+== **Fluxo 3: Criar Aposta (Autenticada)** ==
+
+client -> security : POST /v1/apostas\nAuthorization: Bearer <JWT>
+activate security
+
+security -> jwt : validateToken(token)
+activate jwt
+jwt --> security : boolean valid
+deactivate jwt
+
+alt Token válido
+    security -> controller : criarAposta(ApostaDTO, UserDetails)
+    activate controller
+    
+    controller -> service : criarAposta(apostaDTO, username)
+    activate service
+    
+    service -> repository : findByUsername(username)
+    activate repository
+    repository -> database : SELECT * FROM usuario WHERE username = ?
+    database --> repository : Usuario
+    repository --> service : Usuario
+    
+    service -> service : new Aposta(categoria, jogo, valor, ...)
+    service -> repository : save(aposta)
+    repository -> database : INSERT INTO apostas VALUES(...)
+    database --> repository : Aposta salva
+    repository --> service : Aposta
+    service --> controller : ApostaDTO
+    controller --> client : 200 OK + ApostaDTO
+    deactivate repository
+    deactivate service
+    deactivate controller
+else Token inválido
+    security -> exception : 401 Unauthorized
+    exception --> client : 401 Unauthorized
+end
+deactivate security
+
+== **Fluxo 4: Listar Apostas com Filtro** ==
+
+client -> security : GET /v1/apostas/periodo\n?inicio=2024-01-01&fim=2024-12-31
+activate security
+
+security -> controller : (após validação JWT)
+activate controller
+
+controller -> service : listarApostasPorPeriodo(inicio, fim)
+activate service
+
+service -> repository : findByDataBetween(inicio, fim)
+activate repository
+repository -> database : SELECT * FROM apostas a\nJOIN usuario u ON a.usuario_id = u.id\nWHERE a.data BETWEEN ? AND ?\nORDER BY a.data DESC
+database --> repository : List<Aposta>
+repository --> service : List<Aposta>
+
+service -> service : apostas.stream().map(this::converterParaDTO)
+service --> controller : List<ApostaDTO>
+controller --> client : 200 OK + List<ApostaDTO>
+deactivate repository
+deactivate service
+deactivate controller
+deactivate security
+
+== **Fluxo 5: Tratamento de Exceção** ==
+
+note over exception
+    **GlobalExceptionHandler intercepta automaticamente:**
+    
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    → Validações @Valid nos DTOs
+    
+    @ExceptionHandler(UsuarioJaExisteException.class)  
+    → Regras de negócio violadas
+    
+    @ExceptionHandler(BadCredentialsException.class)
+    → Falhas de autenticação
+    
+    **Retorna sempre ErroResponse padronizado:**
+    {
+        "timestamp": "2024-09-18T10:30:17",
+        "status": 409,
+        "erro": "Usuário já cadastrado", 
+        "mensagem": "Email já está em uso",
+        "path": "/api/v1/auth/register"
+    }
+end note
+
+@enduml
+```

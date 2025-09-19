@@ -1,0 +1,227 @@
+```plantuml
+@startuml Arquitetura BetAware API - Camadas
+
+!theme aws-orange
+skinparam backgroundColor #F8F9FA
+skinparam package {
+    BackgroundColor #FFFFFF
+    BorderColor #2C3E50
+    FontSize 12
+}
+
+title **Arquitetura em Camadas - BetAware API**\n**Spring Boot 3.x + Spring Security + JWT**
+
+package "**🌐 Presentation Layer**" #E3F2FD {
+    
+    package "Controllers (REST)" {
+        class AuthController {
+            + login(LoginRequest): ResponseEntity<JwtResponse>
+            + register(RegisterRequest): ResponseEntity<Void>
+            --
+            📍 /v1/auth/**
+        }
+        
+        class ApostaController {
+            + criarAposta(ApostaDTO): ResponseEntity<ApostaDTO>
+            + listarApostas(): ResponseEntity<List<ApostaDTO>>
+            + listarPorPeriodo(): ResponseEntity<List<ApostaDTO>>
+            --
+            📍 /v1/apostas/**
+            🔒 Requer autenticação JWT
+        }
+        
+        class HealthController {
+            + healthCheck(): ResponseEntity<String>
+            --
+            📍 /v1/health
+        }
+        
+        class DebugController {
+            + getDatabaseInfo(): ResponseEntity<Map>
+            --
+            📍 /v1/debug/**
+        }
+    }
+    
+    package "DTOs (Data Transfer)" {
+        class ApostaDTO
+        class LoginRequest  
+        class RegisterRequest
+        class JwtResponse
+        class ErroResponse
+    }
+}
+
+package "**🔐 Security Layer**" #FFF3E0 {
+    class SecurityConfig {
+        + securityFilterChain(): SecurityFilterChain
+        + corsConfigurationSource(): CorsConfigurationSource
+        + passwordEncoder(): BCryptPasswordEncoder
+    }
+    
+    class JwtAuthenticationFilter {
+        + doFilterInternal(): void
+        --
+        Intercepta requisições e
+        valida tokens JWT
+    }
+    
+    class JwtTokenProvider {
+        + generateToken(): String
+        + validateToken(): boolean
+        + getUsernameFromToken(): String
+    }
+    
+    class CustomUserDetailsService {
+        + loadUserByUsername(): UserDetails
+        --
+        Carrega usuário do banco
+        para autenticação
+    }
+}
+
+package "**⚙️ Business Layer**" #E8F5E8 {
+    class AuthService {
+        + login(LoginRequest): JwtResponse
+        + register(RegisterRequest): void
+        --
+        🔒 Autenticação e registro
+        🛡️ Validações de negócio
+    }
+    
+    class ApostaService {
+        + criarAposta(): ApostaDTO
+        + listarApostasPorUsuario(): List<ApostaDTO>
+        + listarPorPeriodo(): List<ApostaDTO>
+        --
+        📊 Regras de negócio das apostas
+        🔍 Filtros e consultas
+    }
+}
+
+package "**💾 Data Access Layer**" #FCE4EC {
+    interface UsuarioRepository {
+        + findByUsername(): Optional<Usuario>
+        + findByEmail(): Optional<Usuario>
+        + existsByUsername(): boolean
+        + existsByEmail(): boolean
+        + existsByCpf(): boolean
+        --
+        📦 JpaRepository<Usuario, Long>
+    }
+    
+    interface ApostaRepository {
+        + findByUsuarioUsernameOrderByDataDesc(): List<Aposta>
+        + findByDataBetween(): List<Aposta>
+        + findByUsuarioAndDataBetween(): List<Aposta>
+        --
+        📦 JpaRepository<Aposta, Long>
+    }
+}
+
+package "**🗃️ Model Layer**" #F3E5F5 {
+    class Usuario {
+        - Entidade JPA
+        - UserDetails (Spring Security)
+        - Validações Bean Validation
+    }
+    
+    class Aposta {
+        - Entidade JPA  
+        - Relacionamento @ManyToOne
+        - Validações de negócio
+    }
+    
+    enum Perfil
+    enum ResultadoAposta
+}
+
+package "**⚠️ Exception Handling**" #FFEBEE {
+    class GlobalExceptionHandler {
+        + handleValidationExceptions()
+        + handleBadCredentialsException()
+        + handleUsuarioJaExisteException()
+        + handleRecursoNaoEncontradoException()
+        --
+        🎯 @RestControllerAdvice
+        📋 Padronização de erros
+    }
+    
+    class UsuarioJaExisteException
+    class RecursoNaoEncontradoException  
+    class NegocioException
+}
+
+package "**🔧 Configuration**" #E0F2F1 {
+    class OpenApiConfig {
+        + customOpenAPI(): OpenAPI
+        --
+        📚 Swagger/OpenAPI 3
+        🔑 JWT Security Schema
+    }
+    
+    class CorsConfig {
+        + corsFilter(): CorsFilter
+        --
+        🌍 Configuração CORS
+        📱 Suporte para Mobile/Web
+    }
+    
+    class DataInitializer {
+        + loadData(): CommandLineRunner
+        --
+        🏗️ Dados iniciais para testes
+    }
+}
+
+' === RELACIONAMENTOS ENTRE CAMADAS ===
+
+' Controllers -> Services
+AuthController --> AuthService : usa
+ApostaController --> ApostaService : usa
+
+' Services -> Repositories  
+AuthService --> UsuarioRepository : acessa
+ApostaService --> UsuarioRepository : acessa
+ApostaService --> ApostaRepository : acessa
+
+' Security -> Services
+SecurityConfig --> JwtAuthenticationFilter : configura
+JwtAuthenticationFilter --> JwtTokenProvider : usa
+JwtAuthenticationFilter --> CustomUserDetailsService : usa
+CustomUserDetailsService --> UsuarioRepository : consulta
+AuthService --> JwtTokenProvider : gera tokens
+
+' Services -> Models
+AuthService --> Usuario : manipula
+ApostaService --> Usuario : consulta
+ApostaService --> Aposta : manipula
+
+' Controllers -> DTOs
+AuthController --> LoginRequest : recebe
+AuthController --> RegisterRequest : recebe  
+AuthController --> JwtResponse : retorna
+ApostaController --> ApostaDTO : usa
+
+' Exception Handling
+GlobalExceptionHandler --> ErroResponse : retorna
+AuthService --> UsuarioJaExisteException : lança
+ApostaService --> RecursoNaoEncontradoException : lança
+
+' Notas explicativas
+note right of SecurityConfig
+    **Configuração Principal de Segurança**
+    • JWT Stateless Authentication
+    • CORS para Mobile/Web
+    • Endpoints públicos e protegidos
+end note
+
+note bottom of GlobalExceptionHandler  
+    **Interceptação Global de Exceções**
+    • Respostas padronizadas
+    • Status HTTP apropriados
+    • Mensagens user-friendly
+end note
+
+@enduml
+```
