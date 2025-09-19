@@ -47,7 +47,7 @@ src/main/java/com/example/betaware/
 ### 🏗️ Arquitetura do Sistema
 O projeto segue uma arquitetura em camadas bem definida (Presentation → Business → Data), com separação clara de responsabilidades e uso de padrões Spring Boot:
 
-![Diagrama de Arquitetura](docs/diagramas/arquitetura.png)
+![Diagrama de Arquitetura](docs/arquitetura.png)
 - **Presentation Layer**: Controllers REST com validação e DTOs
 - **Security Layer**: JWT Authentication e Spring Security
 - **Business Layer**: Services com regras de negócio
@@ -57,7 +57,7 @@ O projeto segue uma arquitetura em camadas bem definida (Presentation → Busine
 ### 🗄️ Modelo de Entidades
 Modelo de dados simplificado focado na funcionalidade core de apostas simuladas:
 
-![Diagrama de Entidades](docs/diagramas/entidades.png)
+![Diagrama de Entidades](docs/entidade.png)
 - **Usuario**: Implementa UserDetails para integração com Spring Security
 - **Aposta**: Entidade principal com validações de negócio
 - **Enums**: Perfil (ADMIN/USER) e ResultadoAposta (GANHOU/PERDEU/PENDENTE/CANCELADA)
@@ -65,27 +65,11 @@ Modelo de dados simplificado focado na funcionalidade core de apostas simuladas:
 ### 📋 Casos de Uso
 Principais fluxos funcionais da aplicação com foco na experiência do usuário:
 
-![Diagrama de Casos de Uso](docs/diagramas/casos_uso.png)
+![Diagrama de Casos de Uso](docs/caso-uso.png)
 - **Autenticação**: Registro e login com JWT
 - **Gestão de Apostas**: CRUD completo com filtros
 - **Administração**: Controles administrativos
 - **Infraestrutura**: Health checks e documentação
-
-### 🔄 Fluxos de Sequência
-Detalhamento dos principais fluxos de interação entre componentes:
-
-![Diagrama de Sequência](docs/diagramas/sequencia.png)
-- Fluxo completo de registro e autenticação
-- Criação de apostas com validação JWT
-- Tratamento de exceções padronizado
-
-### 🧩 Arquitetura de Componentes
-Visão de implantação e integração entre componentes do sistema:
-
-![Diagrama de Componentes](docs/diagramas/componentes.png)
-- Separação por responsabilidades
-- Integrações com frontend (Mobile/Web)
-- Infraestrutura e dependências externas
 
 ## Endpoints Principais
 
