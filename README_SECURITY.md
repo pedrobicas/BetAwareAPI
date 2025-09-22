@@ -1,10 +1,5 @@
 # BetAware API - Sistema de Gerenciamento de Apostas Esportivas
 
-[![Security Pipeline](https://github.com/pedrobicas/BetAwareAPI/actions/workflows/security-pipeline.yml/badge.svg)](https://github.com/pedrobicas/BetAwareAPI/actions/workflows/security-pipeline.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=betaware-api&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=betaware-api)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=betaware-api&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=betaware-api)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=betaware-api&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=betaware-api)
-
 ## 🚀 Sobre o Projeto
 
 Betaware é uma plataforma com o objetivo de conscientizar sobre os riscos das apostas esportivas. A plataforma permite que o usuário simule apostas fictícias, visualize relatórios detalhados de desempenho e acompanhe seu comportamento ao longo do tempo.
