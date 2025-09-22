@@ -1,0 +1,75 @@
+rules:
+  - id: hardcoded-jwt-secret
+    pattern: |
+      String $SECRET = "$VALUE";
+    message: "Hardcoded JWT secret detected. Use environment variables or secure configuration."
+    languages: [java]
+    severity: ERROR
+    metadata:
+      category: security
+      technology: [java, spring]
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      
+  - id: sql-injection-risk
+    patterns:
+      - pattern: |
+          $QUERY = "..." + $VAR + "...";
+      - pattern: |
+          createQuery($QUERY)
+    message: "Potential SQL injection vulnerability. Use parameterized queries."
+    languages: [java]
+    severity: ERROR
+    metadata:
+      category: security
+      technology: [java, jpa]
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      
+  - id: weak-password-encoder
+    pattern: |
+      new PlaintextPasswordEncoder()
+    message: "Weak password encoder detected. Use BCryptPasswordEncoder or similar."
+    languages: [java]
+    severity: ERROR
+    metadata:
+      category: security
+      technology: [java, spring-security]
+      cwe: "CWE-916: Use of Password Hash With Insufficient Computational Effort"
+      owasp: "A02:2021 - Cryptographic Failures"
+      
+  - id: cors-wildcard-origin
+    pattern: |
+      setAllowedOrigins(Arrays.asList("*"))
+    message: "CORS wildcard origin detected. Specify explicit origins for security."
+    languages: [java]
+    severity: WARNING
+    metadata:
+      category: security
+      technology: [java, spring]
+      cwe: "CWE-942: Permissive Cross-domain Policy"
+      owasp: "A05:2021 - Security Misconfiguration"
+      
+  - id: debug-logging-enabled
+    pattern: |
+      logging.level.org.springframework.security=DEBUG
+    message: "Debug logging for Spring Security enabled. Disable in production."
+    languages: [properties]
+    severity: WARNING
+    metadata:
+      category: security
+      technology: [spring]
+      cwe: "CWE-200: Information Exposure"
+      owasp: "A09:2021 - Security Logging and Monitoring Failures"
+      
+  - id: h2-console-enabled
+    pattern: |
+      spring.h2.console.enabled=true
+    message: "H2 console enabled. Disable in production environments."
+    languages: [properties]
+    severity: WARNING
+    metadata:
+      category: security
+      technology: [spring, h2]
+      cwe: "CWE-489: Active Debug Code"
+      owasp: "A05:2021 - Security Misconfiguration"

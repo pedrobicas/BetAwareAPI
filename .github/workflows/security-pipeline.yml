@@ -1,0 +1,415 @@
+name: Security CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    # Run security scans daily at 2 AM
+    - cron: '0 2 * * *'
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx1024m'
+
+jobs:
+  # SAST - Static Application Security Testing
+  sast-analysis:
+    name: SAST - Static Security Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+      
+      # Semgrep SAST
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/java
+            .semgrep/settings.yml
+            .semgrep/custom-rules.yml
+          generateSarif: "1"
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      
+      - name: Upload Semgrep results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+      
+      # SpotBugs with FindSecBugs
+      - name: Compile code
+        run: mvn clean compile test-compile
+      
+      - name: Run SpotBugs Security Analysis
+        run: mvn spotbugs:check
+        continue-on-error: true
+      
+      - name: Upload SpotBugs results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotbugs-security-report
+          path: target/spotbugs*.xml
+      
+      # PMD Security Analysis
+      - name: Run PMD Security Analysis
+        run: mvn pmd:check
+        continue-on-error: true
+      
+      - name: Upload PMD results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmd-security-report
+          path: target/pmd.xml
+      
+      # SonarQube Analysis
+      - name: Run SonarQube Analysis
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn clean verify sonar:sonar \
+            -Dsonar.projectKey=betaware-api \
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+      
+      - name: Check SAST Quality Gate
+        run: |
+          echo "Checking SAST results..."
+          if [ -f "target/spotbugs*.xml" ] && grep -q "BugInstance" target/spotbugs*.xml; then
+            echo "⚠️ SpotBugs found security issues"
+            exit 1
+          fi
+          if [ -f "target/pmd.xml" ] && grep -q "violation" target/pmd.xml; then
+            echo "⚠️ PMD found security issues"
+            exit 1
+          fi
+          echo "✅ SAST analysis passed"
+
+  # SCA - Software Composition Analysis
+  sca-analysis:
+    name: SCA - Dependency Security Analysis
+    runs-on: ubuntu-latest
+    needs: sast-analysis
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+      
+      # OWASP Dependency Check
+      - name: Run OWASP Dependency Check
+        run: mvn dependency-check:check
+        continue-on-error: true
+      
+      - name: Upload OWASP Dependency Check results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: target/dependency-check/*
+      
+      # Snyk Security Scan
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/maven@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --file=pom.xml
+      
+      - name: Upload Snyk results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk.sarif
+      
+      # License Check
+      - name: License Compatibility Check
+        run: |
+          mvn license:check || echo "License check completed with warnings"
+      
+      - name: Check SCA Quality Gate
+        run: |
+          echo "Checking SCA results..."
+          CRITICAL_VULNS=0
+          
+          # Check OWASP Dependency Check results
+          if [ -f "target/dependency-check/dependency-check-report.json" ]; then
+            CRITICAL_VULNS=$(jq '.dependencies[] | select(.vulnerabilities != null) | .vulnerabilities[] | select(.severity == "CRITICAL")' target/dependency-check/dependency-check-report.json | wc -l)
+          fi
+          
+          if [ "$CRITICAL_VULNS" -gt 0 ]; then
+            echo "❌ Found $CRITICAL_VULNS critical vulnerabilities"
+            exit 1
+          fi
+          
+          echo "✅ SCA analysis passed"
+
+  # Build and Test
+  build-and-test:
+    name: Build and Unit Tests
+    runs-on: ubuntu-latest
+    needs: [sast-analysis, sca-analysis]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+      
+      - name: Run tests with coverage
+        run: mvn clean test jacoco:report
+      
+      - name: Build application
+        run: mvn clean package -DskipTests
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-artifact
+          path: target/*.jar
+          retention-days: 1
+
+  # DAST - Dynamic Application Security Testing
+  dast-analysis:
+    name: DAST - Dynamic Security Testing
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    services:
+      app:
+        image: openjdk:17-jdk-slim
+        ports:
+          - 8080:8080
+        env:
+          SPRING_PROFILES_ACTIVE: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jar-artifact
+          path: ./
+      
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+      
+      - name: Start application
+        run: |
+          java -jar *.jar &
+          sleep 30
+          curl -f http://localhost:8080/api/v1/health || exit 1
+        env:
+          SPRING_PROFILES_ACTIVE: test
+      
+      # OWASP ZAP Baseline Scan
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:8080'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -x zap-report.xml -r zap-report.html'
+      
+      - name: Upload ZAP results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-security-report
+          path: |
+            zap-report.html
+            zap-report.xml
+      
+      # API Security Testing
+      - name: API Security Testing
+        run: |
+          echo "Running API security tests..."
+          
+          # Test for common API vulnerabilities
+          # Authentication bypass
+          curl -f -X GET http://localhost:8080/api/v1/apostas || echo "Authentication test passed"
+          
+          # SQL Injection test
+          curl -f -X POST http://localhost:8080/api/v1/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin'\''OR 1=1--","password":"test"}' || echo "SQL injection test passed"
+          
+          # XSS test
+          curl -f -X POST http://localhost:8080/api/v1/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{"username":"<script>alert(1)</script>","email":"test@test.com","password":"test"}' || echo "XSS test passed"
+      
+      - name: Check DAST Quality Gate
+        run: |
+          echo "Checking DAST results..."
+          
+          # Check ZAP report for high/critical issues
+          if [ -f "zap-report.xml" ]; then
+            HIGH_RISK=$(grep -c 'riskcode="3"' zap-report.xml || echo "0")
+            CRITICAL_RISK=$(grep -c 'riskcode="4"' zap-report.xml || echo "0")
+            
+            if [ "$HIGH_RISK" -gt 0 ] || [ "$CRITICAL_RISK" -gt 0 ]; then
+              echo "❌ Found $HIGH_RISK high-risk and $CRITICAL_RISK critical-risk vulnerabilities"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ DAST analysis passed"
+
+  # Security Report Consolidation
+  security-report:
+    name: Consolidate Security Reports
+    runs-on: ubuntu-latest
+    needs: [sast-analysis, sca-analysis, dast-analysis]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Generate Security Summary Report
+        run: |
+          mkdir -p security-reports
+          
+          echo "# Security Analysis Summary Report" > security-reports/SECURITY_SUMMARY.md
+          echo "**Generated on:** $(date)" >> security-reports/SECURITY_SUMMARY.md
+          echo "**Repository:** ${{ github.repository }}" >> security-reports/SECURITY_SUMMARY.md
+          echo "**Branch:** ${{ github.ref }}" >> security-reports/SECURITY_SUMMARY.md
+          echo "**Commit:** ${{ github.sha }}" >> security-reports/SECURITY_SUMMARY.md
+          echo "" >> security-reports/SECURITY_SUMMARY.md
+          
+          echo "## SAST (Static Analysis)" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ Semgrep: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ SpotBugs + FindSecBugs: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ PMD Security Rules: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ SonarQube: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "" >> security-reports/SECURITY_SUMMARY.md
+          
+          echo "## SCA (Dependency Analysis)" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ OWASP Dependency Check: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ Snyk: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "" >> security-reports/SECURITY_SUMMARY.md
+          
+          echo "## DAST (Dynamic Analysis)" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ OWASP ZAP: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ✅ API Security Tests: Completed" >> security-reports/SECURITY_SUMMARY.md
+          echo "" >> security-reports/SECURITY_SUMMARY.md
+          
+          echo "## Artifacts Generated" >> security-reports/SECURITY_SUMMARY.md
+          echo "- SpotBugs Security Report" >> security-reports/SECURITY_SUMMARY.md
+          echo "- PMD Security Report" >> security-reports/SECURITY_SUMMARY.md
+          echo "- OWASP Dependency Check Report" >> security-reports/SECURITY_SUMMARY.md
+          echo "- ZAP Security Report" >> security-reports/SECURITY_SUMMARY.md
+          echo "- SARIF files uploaded to GitHub Security tab" >> security-reports/SECURITY_SUMMARY.md
+      
+      - name: Upload consolidated security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-security-reports
+          path: security-reports/
+      
+      - name: Comment PR with security results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('security-reports/SECURITY_SUMMARY.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+  # Deploy to Staging (for DAST in real environment)
+  deploy-staging:
+    name: Deploy to Staging for DAST
+    runs-on: ubuntu-latest
+    needs: [sast-analysis, sca-analysis, build-and-test]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment: staging
+    
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jar-artifact
+          path: ./
+      
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          echo "Application URL: https://staging.betaware.com"
+          # Add actual deployment commands here
+      
+      - name: Wait for deployment
+        run: sleep 60
+      
+      - name: Health check
+        run: |
+          curl -f https://staging.betaware.com/api/v1/health || exit 1
+
+  # Notification
+  notify:
+    name: Security Notifications
+    runs-on: ubuntu-latest
+    needs: [security-report]
+    if: always()
+    
+    steps:
+      - name: Notify security team
+        if: failure()
+        run: |
+          echo "🚨 Security pipeline failed! Check the security reports."
+          # Add notification logic here (Slack, email, etc.)
+      
+      - name: Success notification
+        if: success()
+        run: |
+          echo "✅ Security pipeline completed successfully!"

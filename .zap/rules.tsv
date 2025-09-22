@@ -1,0 +1,74 @@
+# ZAP Rules Configuration
+# Format: ruleId	action	parameter
+# Actions: IGNORE, WARN, FAIL
+# Rules: https://www.zaproxy.org/docs/alerts/
+
+# High priority security rules (FAIL)
+10021	FAIL	# X-Content-Type-Options header missing
+10023	FAIL	# Information Disclosure - Debug Error Messages
+10025	FAIL	# Information Disclosure - Sensitive Information in URL
+10026	FAIL	# HTTP Parameter Override
+10027	FAIL	# Information Disclosure - Suspicious Comments
+10028	FAIL	# Open Redirect
+10029	FAIL	# Cookie Poisoning
+10030	FAIL	# User Controllable Charset
+10031	FAIL	# User Controllable HTML Element Attribute
+10032	FAIL	# Viewstate Scanner
+10033	FAIL	# Directory Browsing
+10034	FAIL	# Heartbleed OpenSSL Vulnerability
+10035	FAIL	# Strict-Transport-Security Header Not Set
+10036	FAIL	# HTTP Server Response Header
+10037	FAIL	# Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s)
+10038	FAIL	# Content Security Policy (CSP) Header Not Set
+10040	FAIL	# Secure Pages Include Mixed Content
+10041	FAIL	# HTTP to HTTPS Insecure Transition in Form Post
+10042	FAIL	# HTTPS to HTTP Insecure Transition in Form Post
+10043	FAIL	# User Controllable JavaScript Event
+10044	FAIL	# Big Redirect Detected
+10045	FAIL	# Source Code Disclosure - /WEB-INF folder
+10046	FAIL	# Source Code Disclosure - /META-INF folder
+10047	FAIL	# Source Code Disclosure - Java
+10048	FAIL	# ShellShock - CVE-2014-6271
+10049	FAIL	# Content Cacheability
+10050	FAIL	# Retrieved from Cache
+10051	FAIL	# Relative Path Confusion
+10052	FAIL	# X-ChromeLogger-Data (XCOLD) Header Information Leak
+10054	FAIL	# Cookie without SameSite Attribute
+10055	FAIL	# CSP Scanner: Wildcard Directive
+10056	FAIL	# X-Debug-Token Information Leak
+10057	FAIL	# Username Hash Found
+10058	FAIL	# GET for POST
+10061	FAIL	# X-AspNet-Version Response Header
+10062	FAIL	# PII Scanner
+
+# Medium priority rules (WARN)
+90001	WARN	# Insecure JSF ViewState
+90002	WARN	# Java Serialization Object
+90003	WARN	# Sub Resource Integrity Attribute Missing
+90004	WARN	# Insufficient Site Isolation Against Spectre Vulnerability
+90005	WARN	# Sec-Fetch-Dest Header is Missing
+90006	WARN	# Sec-Fetch-Site Header is Missing
+90007	WARN	# Sec-Fetch-User Header is Missing
+
+# SQL Injection rules (FAIL)
+40018	FAIL	# SQL Injection
+40019	FAIL	# SQL Injection - MySQL
+40020	FAIL	# SQL Injection - Hypersonic SQL
+40021	FAIL	# SQL Injection - Oracle
+40022	FAIL	# SQL Injection - PostgreSQL
+
+# XSS rules (FAIL)
+40012	FAIL	# Cross Site Scripting (Reflected)
+40013	FAIL	# Cross Site Scripting (Persistent)
+40014	FAIL	# Cross Site Scripting (Persistent) - Prime
+40016	FAIL	# Cross Site Scripting (Persistent) - Spider
+40017	FAIL	# Cross Site Scripting (DOM Based)
+
+# Authentication rules (FAIL)
+10102	FAIL	# Session ID in URL rewrite
+10103	FAIL	# Session Fixation
+10105	FAIL	# Weak Authentication Method
+
+# Ignore rules for development environment
+10009	IGNORE	# In Page Banner Information Leak (for H2 console)
+10011	IGNORE	# Cookie Without Secure Flag (for local development)

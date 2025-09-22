@@ -1,0 +1,44 @@
+rules:
+  # Java Security Rules
+  - java.spring.security.audit.spring-actuator-fully-enabled
+  - java.spring.security.audit.spring-csrf-disabled
+  - java.spring.security.audit.spring-csrf-unrestricted-RequestMapping
+  - java.spring.security.audit.cookie-missing-httponly
+  - java.spring.security.audit.cookie-missing-secure
+  - java.spring.security.injection.tainted-sql-string
+  - java.spring.security.injection.tainted-ldap-string
+  - java.spring.security.injection.tainted-xpath-string
+  - java.spring.security.injection.tainted-url-host
+  - java.spring.xss.tainted-unescaped-extension
+  - java.spring.xss.view-response-writer
+  - java.lang.security.audit.crypto.ssl.defaulthttpclient-is-deprecated
+  - java.lang.security.audit.crypto.weak-hash
+  - java.lang.security.audit.crypto.weak-cipher
+  - java.lang.security.audit.hardcoded-secret
+  - java.lang.security.audit.sqli.jdbc-sqli
+  - java.lang.security.audit.xss.servlets.xss-print-writer
+  - java.lang.security.audit.xxe.documentbuilderfactory-xxe
+  - java.lang.security.audit.command-injection
+  - java.lang.security.audit.path-traversal
+  
+  # JWT Security Rules
+  - java.spring.security.jwt.hardcoded-secret
+  - java.spring.security.jwt.weak-key
+  
+  # OWASP Top 10 Rules
+  - owasp-top-ten
+  
+  # Generic Security Rules
+  - security-audit
+
+exclude:
+  - "*.min.js"
+  - "node_modules"
+  - "target"
+  - "*.jar"
+  - "*.class"
+  
+severity: 
+  - ERROR
+  - WARNING
+  - INFO
