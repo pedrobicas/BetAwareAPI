@@ -1,0 +1,115 @@
+rules:
+  - id: hardcoded-jwt-secret
+    patterns:
+      - pattern: $SECRET = "$VALUE"
+      - pattern: secret = "$VALUE"
+      - pattern: jwt.secret = "$VALUE"
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: '[A-Za-z0-9+/=]{32,}'
+    message: Hardcoded JWT secret detected. Use environment variables or secure configuration.
+    languages: [generic]
+    severity: HIGH
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+
+  - id: sql-injection-jpa
+    patterns:
+      - pattern: |
+          @Query("... + $USER_INPUT + ...")
+      - pattern: |
+          @Query(value = "... + $USER_INPUT + ...", nativeQuery = true)
+      - pattern: |
+          createQuery("... + $USER_INPUT + ...")
+    message: Potential SQL injection vulnerability in JPA query
+    languages: [java]
+    severity: HIGH
+    metadata:
+      category: security
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+
+  - id: h2-console-enabled-production
+    patterns:
+      - pattern: spring.h2.console.enabled=true
+    message: H2 Console should not be enabled in production
+    languages: [generic]
+    severity: MEDIUM
+    metadata:
+      category: security
+      cwe: "CWE-200: Information Exposure"
+
+  - id: cors-wildcard-origin
+    patterns:
+      - pattern: setAllowedOrigins(Arrays.asList("*"))
+      - pattern: setAllowedOrigins(List.of("*"))
+      - pattern: allowedOrigins("*")
+    message: CORS configured with wildcard origin (*) - security risk
+    languages: [java]
+    severity: HIGH
+    metadata:
+      category: security
+      cwe: "CWE-346: Origin Validation Error"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: logging-sensitive-data
+    patterns:
+      - pattern: log.info("... password ...")
+      - pattern: log.debug("... password ...")
+      - pattern: log.warn("... password ...")
+      - pattern: log.error("... password ...")
+      - pattern: System.out.println("... password ...")
+    message: Potential logging of sensitive data detected
+    languages: [java]
+    severity: MEDIUM
+    metadata:
+      category: security
+      cwe: "CWE-532: Information Exposure Through Log Files"
+
+  - id: weak-password-validation
+    patterns:
+      - pattern: |
+          @Size(min=$MIN, max=$MAX)
+          ...
+          String password
+      - metavariable-comparison:
+          metavariable: $MIN
+          comparison: $MIN < 8
+    message: Password minimum length should be at least 8 characters
+    languages: [java]
+    severity: MEDIUM
+    metadata:
+      category: security
+      cwe: "CWE-521: Weak Password Requirements"
+
+  - id: jwt-no-expiration
+    patterns:
+      - pattern: |
+          Jwts.builder()
+              ...
+              .compact()
+      - pattern-not: |
+          Jwts.builder()
+              ...
+              .setExpiration(...)
+              ...
+              .compact()
+    message: JWT token created without expiration time
+    languages: [java]
+    severity: HIGH
+    metadata:
+      category: security
+      cwe: "CWE-613: Insufficient Session Expiration"
+
+  - id: debug-mode-enabled
+    patterns:
+      - pattern: logging.level.org.springframework.security=DEBUG
+      - pattern: logging.level.root=DEBUG
+    message: Debug logging enabled - may expose sensitive information
+    languages: [generic]
+    severity: LOW
+    metadata:
+      category: security
+      cwe: "CWE-532: Information Exposure Through Log Files"

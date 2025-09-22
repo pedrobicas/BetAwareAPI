@@ -1,0 +1,59 @@
+# ZAP Rules Configuration for BetAware API
+# Format: Rule ID	IGNORE/WARN/FAIL	Description
+
+# Authentication and Session Management
+10040	FAIL	Secure Cookie Without Secure Flag
+10041	FAIL	HTTP Only Cookie
+10042	FAIL	Weak Authentication Method
+10043	FAIL	User Credentials Transmitted over HTTP
+
+# Input Validation 
+40012	FAIL	Cross Site Scripting (Reflected)
+40013	FAIL	Cross Site Scripting (Persistent)
+40014	FAIL	Cross Site Scripting (DOM Based)
+40018	FAIL	SQL Injection
+40019	FAIL	SQL Injection (MySQL)
+40020	FAIL	SQL Injection (Oracle)
+40021	FAIL	SQL Injection (PostgreSQL)
+90018	FAIL	SQL Injection (SQLite)
+
+# Information Disclosure
+10036	WARN	Server Leaks Version Information via "Server" HTTP Response Header Field
+10037	WARN	Server Leaks Information via "X-Powered-By" HTTP Response Header Field
+10038	WARN	Content Security Policy (CSP) Header Not Set
+10039	WARN	X-Frame-Options Header Not Set
+10098	WARN	Cross-Domain Misconfiguration
+
+# Spring Boot Specific Issues
+90019	FAIL	Server Side Include
+90020	FAIL	Remote File Inclusion
+90021	FAIL	Source Code Disclosure - /WEB-INF folder
+90022	FAIL	Application Error Disclosure
+
+# API Security
+90023	FAIL	XML External Entity Attack
+90024	FAIL	Generic Padding Oracle
+90025	FAIL	Expression Language Injection
+90026	FAIL	LDAP Injection
+
+# Configuration Issues
+10063	WARN	Feature Policy Header Not Set
+10020	WARN	X-Frame-Options Header Not Set
+10021	WARN	X-Content-Type-Options Header Not Set
+10023	WARN	Information Disclosure - Debug Error Messages
+
+# Custom rules for this application
+# H2 Console should not be accessible in production
+# JWT tokens should have proper expiration
+# API endpoints should have proper authentication
+
+# Low priority issues (warnings only)
+10010	WARN	Cookie No HttpOnly Flag
+10011	WARN	Cookie Without Secure Flag
+10015	WARN	Incomplete or No Cache-control and Pragma HTTP Header Set
+10016	WARN	Web Browser XSS Protection Not Enabled
+10017	WARN	Cross-Domain JavaScript Source File Inclusion
+
+# Issues to ignore in development/testing
+10096	IGNORE	Timestamp Disclosure - Unix
+10105	IGNORE	Weak Authentication Method

@@ -1,0 +1,155 @@
+{
+    "version": "1.137.0",
+    "results": [
+        {
+            "check_id": "h2-console-enabled-production",
+            "path": "src\\main\\resources\\application.properties",
+            "start": {
+                "line": 11,
+                "col": 1,
+                "offset": 290
+            },
+            "end": {
+                "line": 11,
+                "col": 31,
+                "offset": 320
+            },
+            "extra": {
+                "message": "H2 Console should not be enabled in production",
+                "metadata": {
+                    "category": "security",
+                    "cwe": "CWE-200: Information Exposure"
+                },
+                "severity": "MEDIUM",
+                "fingerprint": "requires login",
+                "lines": "requires login",
+                "validation_state": "NO_VALIDATOR",
+                "engine_kind": "OSS"
+            }
+        }
+    ],
+    "errors": [
+        {
+            "code": 2,
+            "level": "error",
+            "type": "Rule parse error",
+            "rule_id": "weak-password-validation",
+            "message": "Rule parse error in rule weak-password-validation:\n Invalid pattern for Java: Stdlib.Parsing.Parse_error\n----- pattern -----\n@Size(min=$MIN, max=$MAX)\n...\nString password\n\n----- end pattern -----\n"
+        },
+        {
+            "code": 2,
+            "level": "error",
+            "type": "Rule parse error",
+            "rule_id": "jwt-no-expiration",
+            "message": "Rule parse error in rule jwt-no-expiration:\n Invalid pattern for Java: Stdlib.Parsing.Parse_error\n----- pattern -----\nJwts.builder()\n    ...\n    .compact()\n\n----- end pattern -----\n"
+        }
+    ],
+    "paths": {
+        "scanned": [
+            "src\\main\\java\\com\\example\\betaware\\BetawareApplication.java",
+            "src\\main\\java\\com\\example\\betaware\\config\\CorsConfig.java",
+            "src\\main\\java\\com\\example\\betaware\\config\\DataInitializer.java",
+            "src\\main\\java\\com\\example\\betaware\\config\\FlywayCleanConfig.java",
+            "src\\main\\java\\com\\example\\betaware\\config\\OpenApiConfig.java",
+            "src\\main\\java\\com\\example\\betaware\\controller\\ApostaController.java",
+            "src\\main\\java\\com\\example\\betaware\\controller\\AuthController.java",
+            "src\\main\\java\\com\\example\\betaware\\controller\\HealthController.java",
+            "src\\main\\java\\com\\example\\betaware\\dto\\ApostaDTO.java",
+            "src\\main\\java\\com\\example\\betaware\\dto\\JwtResponse.java",
+            "src\\main\\java\\com\\example\\betaware\\dto\\LoginRequest.java",
+            "src\\main\\java\\com\\example\\betaware\\dto\\RegisterRequest.java",
+            "src\\main\\java\\com\\example\\betaware\\exception\\ErroResponse.java",
+            "src\\main\\java\\com\\example\\betaware\\exception\\GlobalExceptionHandler.java",
+            "src\\main\\java\\com\\example\\betaware\\exception\\NegocioException.java",
+            "src\\main\\java\\com\\example\\betaware\\exception\\RecursoNaoEncontradoException.java",
+            "src\\main\\java\\com\\example\\betaware\\exception\\UsuarioJaExisteException.java",
+            "src\\main\\java\\com\\example\\betaware\\model\\Aposta.java",
+            "src\\main\\java\\com\\example\\betaware\\model\\enums\\Perfil.java",
+            "src\\main\\java\\com\\example\\betaware\\model\\enums\\ResultadoAposta.java",
+            "src\\main\\java\\com\\example\\betaware\\model\\Usuario.java",
+            "src\\main\\java\\com\\example\\betaware\\repository\\ApostaRepository.java",
+            "src\\main\\java\\com\\example\\betaware\\repository\\UsuarioRepository.java",
+            "src\\main\\java\\com\\example\\betaware\\security\\JwtAuthenticationFilter.java",
+            "src\\main\\java\\com\\example\\betaware\\security\\JwtTokenProvider.java",
+            "src\\main\\java\\com\\example\\betaware\\security\\SecurityConfig.java",
+            "src\\main\\java\\com\\example\\betaware\\service\\ApostaService.java",
+            "src\\main\\java\\com\\example\\betaware\\service\\AuthService.java",
+            "src\\main\\java\\com\\example\\betaware\\service\\CustomUserDetailsService.java",
+            "src\\main\\resources\\application.properties",
+            "src\\main\\resources\\db\\migration\\V1__criar_tabelas_iniciais.sql",
+            "src\\main\\resources\\db\\migration\\V2__inserir_dados_teste.sql"
+        ]
+    },
+    "time": {
+        "rules": [],
+        "rules_parse_time": 0.03238654136657715,
+        "profiling_times": {
+            "config_time": 0.3667905330657959,
+            "core_time": 0.5214335918426514,
+            "ignores_time": 2.86102294921875e-005,
+            "total_time": 0.8889167308807373
+        },
+        "parsing_time": {
+            "total_time": 0.0,
+            "per_file_time": {
+                "mean": 0.0,
+                "std_dev": 0.0
+            },
+            "very_slow_stats": {
+                "time_ratio": 0.0,
+                "count_ratio": 0.0
+            },
+            "very_slow_files": []
+        },
+        "scanning_time": {
+            "total_time": 0.023651599884033203,
+            "per_file_time": {
+                "mean": 0.00038773114563988854,
+                "std_dev": 3.21813480452754e-007
+            },
+            "very_slow_stats": {
+                "time_ratio": 0.0,
+                "count_ratio": 0.0
+            },
+            "very_slow_files": []
+        },
+        "matching_time": {
+            "total_time": 0.0,
+            "per_file_and_rule_time": {
+                "mean": 0.0,
+                "std_dev": 0.0
+            },
+            "very_slow_stats": {
+                "time_ratio": 0.0,
+                "count_ratio": 0.0
+            },
+            "very_slow_rules_on_files": []
+        },
+        "tainting_time": {
+            "total_time": 0.0,
+            "per_def_and_rule_time": {
+                "mean": 0.0,
+                "std_dev": 0.0
+            },
+            "very_slow_stats": {
+                "time_ratio": 0.0,
+                "count_ratio": 0.0
+            },
+            "very_slow_rules_on_defs": []
+        },
+        "fixpoint_timeouts": [],        
+        "prefiltering": {
+            "project_level_time": 0.0,
+            "file_level_time": 0.0,
+            "rules_with_project_prefilters_ratio": 0.0,
+            "rules_with_file_prefilters_ratio": 1.0,
+            "rules_selected_ratio": 0.01092896174863388,
+            "rules_matched_ratio": 0.01092896174863388
+        },
+        "targets": [],
+        "total_bytes": 0,
+        "max_memory_bytes": 72041600
+    },
+    "engine_requested": "OSS",
+    "skipped_rules": []
+}

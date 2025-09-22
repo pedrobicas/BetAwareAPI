@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!-- 
+    Suppression file for OWASP Dependency Check
+    Use this to suppress false positives or known issues that are mitigated
+    -->
+    
+    <!-- Example suppression for H2 Database (only used in development/testing) -->
+    <suppress>
+        <notes><![CDATA[
+        H2 database is only used for development and testing environments.
+        Production uses external database with proper security configuration.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/com\.h2database/h2@.*$</packageUrl>
+        <cve>CVE-2022-45868</cve>
+    </suppress>
+    
+    <!-- Example suppression for Spring Boot Test dependencies -->
+    <suppress>
+        <notes><![CDATA[
+        Spring Boot Test dependencies are only used during testing phase
+        and are not included in production deployments.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-starter-test@.*$</packageUrl>
+        <vulnerabilityName regex="true">.*test.*</vulnerabilityName>
+    </suppress>
+    
+    <!-- Example suppression for known false positives -->
+    <suppress>
+        <notes><![CDATA[
+        This CVE applies to a different component with the same name.
+        Our usage is not affected by this vulnerability.
+        ]]></notes>
+        <sha1><!-- Insert SHA1 hash of specific JAR if needed --></sha1>
+        <cve><!-- Insert specific CVE to suppress --></cve>
+    </suppress>
+    
+    <!-- Suppress vulnerabilities that don't apply to our usage -->
+    <suppress>
+        <notes><![CDATA[
+        This vulnerability requires specific server configuration that we don't use.
+        Our application is not vulnerable to this attack vector.
+        ]]></notes>
+        <filePath regex="true">.*spring-web.*</filePath>
+        <cve><!-- Insert CVE that doesn't apply to our configuration --></cve>
+    </suppress>
+
+</suppressions>

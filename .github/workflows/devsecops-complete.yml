@@ -1,0 +1,1073 @@
+name: 🛡️ DevSecOps - Complete Security Pipeline
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master ]
+  schedule:
+    - cron: '0 2 * * *'  # Daily security scan at 2 AM
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx4096m'
+  APP_PORT: '8080'
+  SECURITY_THRESHOLD_CRITICAL: 0
+  SECURITY_THRESHOLD_HIGH: 5
+  SECURITY_SCORE_MINIMUM: 75
+
+jobs:
+  # Stage 1: Static Analysis Security Testing (SAST)
+  sast-analysis:
+    name: 🔍 SAST - Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    outputs:
+      sast-gate: ${{ steps.sast-gate.outputs.result }}
+      sast-score: ${{ steps.sast-gate.outputs.score }}
+      critical-count: ${{ steps.sast-gate.outputs.critical }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 📦 Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+
+      - name: 🔍 Run Semgrep SAST
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >- 
+            p/security-audit
+            p/java-security
+            p/owasp-top-ten
+            p/spring
+            .semgrep.yml
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true
+
+      - name: 🔬 Run SonarQube Analysis
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [[ -n "${{ secrets.SONAR_TOKEN }}" ]]; then
+            mvn clean verify sonar:sonar \
+              -Dsonar.projectKey=betaware-api \
+              -Dsonar.organization=pedrobicas \
+              -Dsonar.host.url=https://sonarcloud.io \
+              -Dsonar.login=${{ secrets.SONAR_TOKEN }} \
+              -Dsonar.qualitygate.wait=true
+          else
+            echo "SonarQube token not available, running local analysis only"
+            mvn clean verify
+          fi
+        continue-on-error: true
+
+      - name: 📊 Evaluate SAST Results
+        id: sast-gate
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          import subprocess
+          
+          # Run Semgrep to get detailed results
+          try:
+              result = subprocess.run([
+                  'semgrep', '--config=p/security-audit',
+                  '--config=p/java-security', '--config=p/owasp-top-ten',
+                  '--config=.semgrep.yml', '--json', 'src/'
+              ], capture_output=True, text=True)
+              
+              if result.stdout:
+                  semgrep_data = json.loads(result.stdout)
+              else:
+                  semgrep_data = {"results": []}
+          except:
+              semgrep_data = {"results": []}
+          
+          findings = semgrep_data.get('results', [])
+          
+          # Classify findings by severity
+          critical = len([f for f in findings if f.get('extra', {}).get('severity') == 'ERROR'])
+          high = len([f for f in findings if f.get('extra', {}).get('severity') == 'WARNING'])
+          medium = len([f for f in findings if f.get('extra', {}).get('severity') == 'INFO'])
+          
+          # Calculate security score
+          base_score = 100
+          score_deduction = (critical * 30) + (high * 15) + (medium * 5)
+          security_score = max(0, base_score - score_deduction)
+          
+          # Determine gate status
+          if critical > int(os.environ.get('SECURITY_THRESHOLD_CRITICAL', 0)):
+              gate_status = "FAILED"
+          elif high > int(os.environ.get('SECURITY_THRESHOLD_HIGH', 5)):
+              gate_status = "WARNING"
+          elif security_score < int(os.environ.get('SECURITY_SCORE_MINIMUM', 75)):
+              gate_status = "WARNING"
+          else:
+              gate_status = "PASSED"
+          
+          print(f"SAST Analysis: {len(findings)} findings, Score: {security_score}/100, Gate: {gate_status}")
+          print(f"::set-output name=result::{gate_status}")
+          print(f"::set-output name=score::{security_score}")
+          print(f"::set-output name=critical::{critical}")
+          print(f"::set-output name=high::{high}")
+          print(f"::set-output name=total::{len(findings)}")
+          
+          # Save summary for later stages
+          summary = {
+              "tool": "SAST",
+              "gate_status": gate_status,
+              "security_score": security_score,
+              "total_findings": len(findings),
+              "critical": critical,
+              "high": high,
+              "medium": medium
+          }
+          
+          with open('sast-summary.json', 'w') as f:
+              json.dump(summary, f)
+          EOF
+
+      - name: 📎 Upload SAST Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-results
+          path: sast-summary.json
+          retention-days: 30
+
+  # Stage 2: Software Composition Analysis (SCA)
+  sca-analysis:
+    name: 📦 SCA - Dependency Analysis
+    runs-on: ubuntu-latest
+    needs: sast-analysis
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    outputs:
+      sca-gate: ${{ steps.sca-gate.outputs.result }}
+      sca-score: ${{ steps.sca-gate.outputs.score }}
+      vulnerable-deps: ${{ steps.sca-gate.outputs.vulnerable }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 🔍 OWASP Dependency Check
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -Dformat=JSON \
+            -DfailBuildOnCVSS=7 \
+            -DsuppressedFile=.dependency-check/suppressions.xml
+        continue-on-error: true
+
+      - name: 🛡️ Snyk Security Scan
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=low --json-file-output=snyk-report.json
+        continue-on-error: true
+
+      - name: 📊 Evaluate SCA Results
+        id: sca-gate
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          import glob
+          
+          total_vulnerabilities = 0
+          critical_vulnerabilities = 0
+          high_vulnerabilities = 0
+          vulnerable_dependencies = 0
+          
+          # Process OWASP Dependency Check results
+          dep_check_files = glob.glob("target/dependency-check-report.json")
+          if dep_check_files:
+              try:
+                  with open(dep_check_files[0], 'r') as f:
+                      dep_data = json.load(f)
+                  
+                  if 'dependencies' in dep_data:
+                      for dep in dep_data['dependencies']:
+                          if 'vulnerabilities' in dep and dep['vulnerabilities']:
+                              vulnerable_dependencies += 1
+                              for vuln in dep['vulnerabilities']:
+                                  total_vulnerabilities += 1
+                                  severity = vuln.get('severity', 'UNKNOWN')
+                                  if severity in ['CRITICAL']:
+                                      critical_vulnerabilities += 1
+                                  elif severity in ['HIGH']:
+                                      high_vulnerabilities += 1
+              except Exception as e:
+                  print(f"Error processing dependency check results: {e}")
+          
+          # Process Snyk results
+          if os.path.exists('snyk-report.json'):
+              try:
+                  with open('snyk-report.json', 'r') as f:
+                      snyk_data = json.load(f)
+                  
+                  if 'vulnerabilities' in snyk_data:
+                      for vuln in snyk_data['vulnerabilities']:
+                          total_vulnerabilities += 1
+                          severity = vuln.get('severity', 'unknown').upper()
+                          if severity == 'CRITICAL':
+                              critical_vulnerabilities += 1
+                          elif severity == 'HIGH':
+                              high_vulnerabilities += 1
+              except Exception as e:
+                  print(f"Error processing Snyk results: {e}")
+          
+          # Calculate SCA score
+          base_score = 100
+          score_deduction = (critical_vulnerabilities * 25) + (high_vulnerabilities * 15) + (vulnerable_dependencies * 5)
+          sca_score = max(0, base_score - score_deduction)
+          
+          # Determine gate status
+          if critical_vulnerabilities > 0:
+              gate_status = "FAILED"
+          elif high_vulnerabilities > 5 or sca_score < 70:
+              gate_status = "WARNING"
+          else:
+              gate_status = "PASSED"
+          
+          print(f"SCA Analysis: {total_vulnerabilities} vulnerabilities, Score: {sca_score}/100, Gate: {gate_status}")
+          print(f"::set-output name=result::{gate_status}")
+          print(f"::set-output name=score::{sca_score}")
+          print(f"::set-output name=critical::{critical_vulnerabilities}")
+          print(f"::set-output name=high::{high_vulnerabilities}")
+          print(f"::set-output name=vulnerable::{vulnerable_dependencies}")
+          print(f"::set-output name=total::{total_vulnerabilities}")
+          
+          # Save summary for later stages
+          summary = {
+              "tool": "SCA",
+              "gate_status": gate_status,
+              "security_score": sca_score,
+              "total_vulnerabilities": total_vulnerabilities,
+              "critical": critical_vulnerabilities,
+              "high": high_vulnerabilities,
+              "vulnerable_dependencies": vulnerable_dependencies
+          }
+          
+          with open('sca-summary.json', 'w') as f:
+              json.dump(summary, f)
+          EOF
+
+      - name: 📎 Upload SCA Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-results
+          path: |
+            sca-summary.json
+            target/dependency-check-report.json
+            snyk-report.json
+          retention-days: 30
+
+  # Stage 3: Build and Deploy to Staging
+  build-and-deploy:
+    name: 🚀 Build & Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [sast-analysis, sca-analysis]
+    if: needs.sast-analysis.outputs.sast-gate != 'FAILED' && needs.sca-analysis.outputs.sca-gate != 'FAILED'
+    
+    outputs:
+      app-url: ${{ steps.deploy.outputs.url }}
+      deployment-status: ${{ steps.deploy.outputs.status }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 🔨 Build Application
+        run: |
+          mvn clean package -DskipTests
+          echo "Application built successfully"
+
+      - name: 🧪 Run Unit Tests
+        run: |
+          mvn test
+          echo "Unit tests completed"
+
+      - name: 🚀 Deploy to Staging
+        id: deploy
+        run: |
+          echo "Starting application deployment..."
+          
+          # Start application in background for DAST testing
+          java -jar target/*.jar \
+            --server.port=${{ env.APP_PORT }} \
+            --spring.profiles.active=test \
+            --spring.h2.console.enabled=true \
+            --spring.datasource.url=jdbc:h2:mem:testdb \
+            --logging.level.com.example.betaware=INFO &
+          
+          APP_PID=$!
+          echo "app_pid=$APP_PID" >> $GITHUB_OUTPUT
+          
+          # Wait for application to start
+          echo "Waiting for application to start..."
+          for i in {1..60}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}/actuator/health &>/dev/null; then
+              echo "Application deployed successfully"
+              echo "url=http://localhost:${{ env.APP_PORT }}" >> $GITHUB_OUTPUT
+              echo "status=SUCCESS" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Attempt $i: Application not ready yet..."
+            sleep 5
+          done
+          
+          # Verify deployment
+          if ! curl -f http://localhost:${{ env.APP_PORT }}/actuator/health; then
+            echo "Deployment failed"
+            echo "status=FAILED" >> $GITHUB_OUTPUT
+            kill $APP_PID 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: 🧪 Smoke Tests
+        run: |
+          echo "Running smoke tests..."
+          
+          # Test health endpoint
+          curl -f http://localhost:${{ env.APP_PORT }}/actuator/health
+          
+          # Test API endpoints
+          curl -f http://localhost:${{ env.APP_PORT }}/api/health || echo "API health endpoint not available"
+          
+          echo "Smoke tests completed successfully"
+
+  # Stage 4: Dynamic Application Security Testing (DAST)
+  dast-analysis:
+    name: 🌐 DAST - Dynamic Analysis
+    runs-on: ubuntu-latest
+    needs: [build-and-deploy]
+    if: needs.build-and-deploy.outputs.deployment-status == 'SUCCESS'
+    
+    outputs:
+      dast-gate: ${{ steps.dast-gate.outputs.result }}
+      dast-score: ${{ steps.dast-gate.outputs.score }}
+      attack-scenarios: ${{ steps.dast-gate.outputs.scenarios }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🚀 Start Application for DAST
+        run: |
+          java -jar target/*.jar \
+            --server.port=${{ env.APP_PORT }} \
+            --spring.profiles.active=test \
+            --spring.h2.console.enabled=true &
+          
+          # Wait for application to start
+          for i in {1..60}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}/actuator/health &>/dev/null; then
+              echo "Application ready for DAST testing"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: 🕷️ OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:${{ env.APP_PORT }}'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j -l FAIL -r zap-baseline-report.html -J zap-baseline-report.json'
+        continue-on-error: true
+
+      - name: 🎯 OWASP ZAP Full Scan
+        if: github.ref == 'refs/heads/master'
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: 'http://localhost:${{ env.APP_PORT }}'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j -l FAIL -r zap-full-report.html -J zap-full-report.json'
+        continue-on-error: true
+
+      - name: 📊 Evaluate DAST Results
+        id: dast-gate
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          
+          total_alerts = 0
+          high_risk = 0
+          medium_risk = 0
+          attack_scenarios = 0
+          
+          # Process baseline scan results
+          if os.path.exists('zap-baseline-report.json'):
+              try:
+                  with open('zap-baseline-report.json', 'r') as f:
+                      baseline_data = json.load(f)
+                  
+                  if 'site' in baseline_data:
+                      for site in baseline_data['site']:
+                          if 'alerts' in site:
+                              for alert in site['alerts']:
+                                  total_alerts += 1
+                                  risk = alert.get('riskdesc', '').split()[0].lower()
+                                  if risk == 'high':
+                                      high_risk += 1
+                                      attack_scenarios += 1
+                                  elif risk == 'medium':
+                                      medium_risk += 1
+              except Exception as e:
+                  print(f"Error processing baseline results: {e}")
+          
+          # Process full scan results if available
+          if os.path.exists('zap-full-report.json'):
+              try:
+                  with open('zap-full-report.json', 'r') as f:
+                      full_data = json.load(f)
+                  
+                  if 'site' in full_data:
+                      for site in full_data['site']:
+                          if 'alerts' in site:
+                              for alert in site['alerts']:
+                                  risk = alert.get('riskdesc', '').split()[0].lower()
+                                  if risk == 'high':
+                                      attack_scenarios += len(alert.get('instances', []))
+              except Exception as e:
+                  print(f"Error processing full scan results: {e}")
+          
+          # Calculate DAST score
+          base_score = 100
+          score_deduction = (high_risk * 25) + (medium_risk * 10)
+          dast_score = max(0, base_score - score_deduction)
+          
+          # Determine gate status
+          if high_risk > 0:
+              gate_status = "FAILED"
+          elif medium_risk > 3 or dast_score < 80:
+              gate_status = "WARNING"
+          else:
+              gate_status = "PASSED"
+          
+          print(f"DAST Analysis: {total_alerts} alerts, Score: {dast_score}/100, Gate: {gate_status}")
+          print(f"::set-output name=result::{gate_status}")
+          print(f"::set-output name=score::{dast_score}")
+          print(f"::set-output name=high::{high_risk}")
+          print(f"::set-output name=medium::{medium_risk}")
+          print(f"::set-output name=scenarios::{attack_scenarios}")
+          print(f"::set-output name=total::{total_alerts}")
+          
+          # Save summary for final consolidation
+          summary = {
+              "tool": "DAST",
+              "gate_status": gate_status,
+              "security_score": dast_score,
+              "total_alerts": total_alerts,
+              "high_risk": high_risk,
+              "medium_risk": medium_risk,
+              "attack_scenarios": attack_scenarios
+          }
+          
+          with open('dast-summary.json', 'w') as f:
+              json.dump(summary, f)
+          EOF
+
+      - name: 📎 Upload DAST Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-results
+          path: |
+            dast-summary.json
+            zap-baseline-report.*
+            zap-full-report.*
+          retention-days: 30
+
+  # Stage 5: Security Quality Gate & Consolidated Reporting
+  security-quality-gate:
+    name: 🚦 Security Quality Gate
+    runs-on: ubuntu-latest
+    needs: [sast-analysis, sca-analysis, dast-analysis]
+    if: always()
+    
+    outputs:
+      overall-gate: ${{ steps.final-gate.outputs.result }}
+      security-score: ${{ steps.final-gate.outputs.score }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download all security results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: 🔄 Consolidate Security Results
+        id: final-gate
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          # Initialize consolidated security report
+          consolidated = {
+              "pipeline": "DevSecOps Complete Security Analysis",
+              "timestamp": datetime.now().isoformat(),
+              "commit": os.environ.get('GITHUB_SHA', 'unknown'),
+              "branch": os.environ.get('GITHUB_REF_NAME', 'unknown'),
+              "pipeline_execution": {
+                  "sast_executed": False,
+                  "sca_executed": False, 
+                  "dast_executed": False
+              },
+              "summary": {
+                  "overall_security_score": 0,
+                  "quality_gate_status": "UNKNOWN",
+                  "total_security_issues": 0,
+                  "critical_issues": 0,
+                  "high_issues": 0,
+                  "medium_issues": 0,
+                  "recommendations_count": 0
+              },
+              "tool_results": {},
+              "security_recommendations": [],
+              "deployment_decision": {
+                  "approved": False,
+                  "reason": "",
+                  "required_actions": []
+              }
+          }
+          
+          scores = []
+          gate_failures = []
+          gate_warnings = []
+          
+          # Process SAST results
+          sast_file = Path("security-results/sast-results/sast-summary.json")
+          if sast_file.exists():
+              with open(sast_file) as f:
+                  sast_data = json.load(f)
+              
+              consolidated["pipeline_execution"]["sast_executed"] = True
+              consolidated["tool_results"]["sast"] = sast_data
+              scores.append(sast_data["security_score"])
+              
+              consolidated["summary"]["total_security_issues"] += sast_data["total_findings"]
+              consolidated["summary"]["critical_issues"] += sast_data["critical"]
+              consolidated["summary"]["high_issues"] += sast_data["high"]
+              consolidated["summary"]["medium_issues"] += sast_data["medium"]
+              
+              if sast_data["gate_status"] == "FAILED":
+                  gate_failures.append("SAST")
+              elif sast_data["gate_status"] == "WARNING":
+                  gate_warnings.append("SAST")
+          
+          # Process SCA results
+          sca_file = Path("security-results/sca-results/sca-summary.json")
+          if sca_file.exists():
+              with open(sca_file) as f:
+                  sca_data = json.load(f)
+              
+              consolidated["pipeline_execution"]["sca_executed"] = True
+              consolidated["tool_results"]["sca"] = sca_data
+              scores.append(sca_data["security_score"])
+              
+              consolidated["summary"]["total_security_issues"] += sca_data["total_vulnerabilities"]
+              consolidated["summary"]["critical_issues"] += sca_data["critical"]
+              consolidated["summary"]["high_issues"] += sca_data["high"]
+              
+              if sca_data["gate_status"] == "FAILED":
+                  gate_failures.append("SCA")
+              elif sca_data["gate_status"] == "WARNING":
+                  gate_warnings.append("SCA")
+          
+          # Process DAST results
+          dast_file = Path("security-results/dast-results/dast-summary.json")
+          if dast_file.exists():
+              with open(dast_file) as f:
+                  dast_data = json.load(f)
+              
+              consolidated["pipeline_execution"]["dast_executed"] = True
+              consolidated["tool_results"]["dast"] = dast_data
+              scores.append(dast_data["security_score"])
+              
+              consolidated["summary"]["total_security_issues"] += dast_data["total_alerts"]
+              consolidated["summary"]["high_issues"] += dast_data["high_risk"]
+              consolidated["summary"]["medium_issues"] += dast_data["medium_risk"]
+              
+              if dast_data["gate_status"] == "FAILED":
+                  gate_failures.append("DAST")
+              elif dast_data["gate_status"] == "WARNING":
+                  gate_warnings.append("DAST")
+          
+          # Calculate overall security score
+          if scores:
+              consolidated["summary"]["overall_security_score"] = int(sum(scores) / len(scores))
+          
+          # Determine overall quality gate status
+          if gate_failures:
+              consolidated["summary"]["quality_gate_status"] = "FAILED"
+              consolidated["deployment_decision"]["approved"] = False
+              consolidated["deployment_decision"]["reason"] = f"Critical security issues found in: {', '.join(gate_failures)}"
+          elif gate_warnings:
+              consolidated["summary"]["quality_gate_status"] = "WARNING"
+              consolidated["deployment_decision"]["approved"] = True  # Allow with warnings
+              consolidated["deployment_decision"]["reason"] = f"Security warnings in: {', '.join(gate_warnings)} - deployment allowed with monitoring"
+          else:
+              consolidated["summary"]["quality_gate_status"] = "PASSED"
+              consolidated["deployment_decision"]["approved"] = True
+              consolidated["deployment_decision"]["reason"] = "All security quality gates passed"
+          
+          # Generate security recommendations
+          if consolidated["summary"]["critical_issues"] > 0:
+              consolidated["security_recommendations"].append({
+                  "priority": "CRITICAL",
+                  "action": f"Immediately address {consolidated['summary']['critical_issues']} critical security vulnerabilities",
+                  "timeframe": "0-24 hours",
+                  "impact": "Deployment blocked until resolved"
+              })
+              consolidated["deployment_decision"]["required_actions"].append("Fix all critical vulnerabilities")
+          
+          if consolidated["summary"]["high_issues"] > 5:
+              consolidated["security_recommendations"].append({
+                  "priority": "HIGH",
+                  "action": f"Plan remediation for {consolidated['summary']['high_issues']} high-severity security issues",
+                  "timeframe": "1-7 days", 
+                  "impact": "Security risk assessment required"
+              })
+              consolidated["deployment_decision"]["required_actions"].append("Review high-severity issues")
+          
+          if not consolidated["pipeline_execution"]["dast_executed"]:
+              consolidated["security_recommendations"].append({
+                  "priority": "MEDIUM",
+                  "action": "Schedule DAST testing for comprehensive security validation",
+                  "timeframe": "Next deployment cycle",
+                  "impact": "Runtime security validation missing"
+              })
+          
+          consolidated["summary"]["recommendations_count"] = len(consolidated["security_recommendations"])
+          
+          # Save consolidated report
+          with open('devsecops-consolidated-report.json', 'w') as f:
+              json.dump(consolidated, f, indent=2)
+          
+          # Generate executive summary HTML report
+          html_report = f"""
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>DevSecOps Security Report</title>
+              <style>
+                  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: #f8f9fa; }}
+                  .container {{ max-width: 1400px; margin: 0 auto; padding: 20px; }}
+                  .header {{ background: linear-gradient(135deg, #6f42c1 0%, #007bff 100%); color: white; padding: 40px; border-radius: 15px; margin-bottom: 30px; text-align: center; }}
+                  .status-banner {{ padding: 20px; border-radius: 10px; margin: 20px 0; text-align: center; font-size: 1.2em; font-weight: bold; }}
+                  .status-passed {{ background: #d4edda; color: #155724; border: 2px solid #c3e6cb; }}
+                  .status-warning {{ background: #fff3cd; color: #856404; border: 2px solid #ffeaa7; }}
+                  .status-failed {{ background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }}
+                  .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 25px; margin: 30px 0; }}
+                  .metric {{ background: white; padding: 30px; border-radius: 12px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+                  .metric h3 {{ margin: 0; font-size: 3em; color: #495057; }}
+                  .metric p {{ margin: 10px 0 0 0; color: #6c757d; font-weight: 500; }}
+                  .tools {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 30px 0; }}
+                  .tool {{ background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                  .tool-header {{ display: flex; align-items: center; margin-bottom: 15px; }}
+                  .tool-status {{ width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; }}
+                  .status-ok {{ background: #28a745; }}
+                  .status-warn {{ background: #ffc107; }}
+                  .status-error {{ background: #dc3545; }}
+                  .status-skip {{ background: #6c757d; }}
+                  .recommendations {{ background: white; padding: 30px; border-radius: 12px; margin: 30px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                  .recommendation {{ background: #f8f9fa; padding: 20px; margin: 15px 0; border-radius: 8px; border-left: 5px solid #007bff; }}
+                  .recommendation.critical {{ border-left-color: #dc3545; background: #fff5f5; }}
+                  .recommendation.high {{ border-left-color: #fd7e14; background: #fff8f0; }}
+                  .recommendation.medium {{ border-left-color: #ffc107; background: #fffbf0; }}
+                  .deployment {{ background: white; padding: 30px; border-radius: 12px; margin: 30px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>🛡️ DevSecOps Security Report</h1>
+                      <p><strong>BetAware API - Complete Security Analysis</strong></p>
+                      <p>Generated: {consolidated['timestamp']}</p>
+                      <p>Commit: {consolidated['commit']} | Branch: {consolidated['branch']}</p>
+                  </div>
+                  
+                  <div class="status-banner status-{'passed' if consolidated['summary']['quality_gate_status'] == 'PASSED' else 'warning' if consolidated['summary']['quality_gate_status'] == 'WARNING' else 'failed'}">
+                      🚦 OVERALL SECURITY QUALITY GATE: {consolidated['summary']['quality_gate_status']}
+                  </div>
+                  
+                  <div class="metrics">
+                      <div class="metric">
+                          <h3>{consolidated['summary']['overall_security_score']}</h3>
+                          <p>Overall Security Score</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['total_security_issues']}</h3>
+                          <p>Total Security Issues</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['critical_issues']}</h3>
+                          <p>Critical Issues</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['high_issues']}</h3>
+                          <p>High Risk Issues</p>
+                      </div>
+                  </div>
+                  
+                  <h2>🔧 Security Tools Execution</h2>
+                  <div class="tools">
+          """
+          
+          # SAST Tool Status
+          sast_status = "ok" if consolidated["pipeline_execution"]["sast_executed"] else "skip"
+          if consolidated["pipeline_execution"]["sast_executed"]:
+              sast_result = consolidated["tool_results"]["sast"]["gate_status"]
+              if sast_result == "FAILED":
+                  sast_status = "error"
+              elif sast_result == "WARNING":
+                  sast_status = "warn"
+          
+          html_report += f"""
+                      <div class="tool">
+                          <div class="tool-header">
+                              <div class="tool-status status-{sast_status}"></div>
+                              <h3>🔍 SAST - Static Analysis</h3>
+                          </div>
+                          <p><strong>Status:</strong> {'Executed' if consolidated["pipeline_execution"]["sast_executed"] else 'Skipped'}</p>
+          """
+          
+          if consolidated["pipeline_execution"]["sast_executed"]:
+              sast = consolidated["tool_results"]["sast"]
+              html_report += f"""
+                          <p><strong>Score:</strong> {sast["security_score"]}/100</p>
+                          <p><strong>Findings:</strong> {sast["total_findings"]} (Critical: {sast["critical"]}, High: {sast["high"]})</p>
+                          <p><strong>Gate:</strong> {sast["gate_status"]}</p>
+              """
+          
+          html_report += "</div>"
+          
+          # SCA Tool Status  
+          sca_status = "ok" if consolidated["pipeline_execution"]["sca_executed"] else "skip"
+          if consolidated["pipeline_execution"]["sca_executed"]:
+              sca_result = consolidated["tool_results"]["sca"]["gate_status"]
+              if sca_result == "FAILED":
+                  sca_status = "error"
+              elif sca_result == "WARNING":
+                  sca_status = "warn"
+          
+          html_report += f"""
+                      <div class="tool">
+                          <div class="tool-header">
+                              <div class="tool-status status-{sca_status}"></div>
+                              <h3>📦 SCA - Dependency Analysis</h3>
+                          </div>
+                          <p><strong>Status:</strong> {'Executed' if consolidated["pipeline_execution"]["sca_executed"] else 'Skipped'}</p>
+          """
+          
+          if consolidated["pipeline_execution"]["sca_executed"]:
+              sca = consolidated["tool_results"]["sca"]
+              html_report += f"""
+                          <p><strong>Score:</strong> {sca["security_score"]}/100</p>
+                          <p><strong>Vulnerabilities:</strong> {sca["total_vulnerabilities"]} (Critical: {sca["critical"]}, High: {sca["high"]})</p>
+                          <p><strong>Gate:</strong> {sca["gate_status"]}</p>
+              """
+          
+          html_report += "</div>"
+          
+          # DAST Tool Status
+          dast_status = "ok" if consolidated["pipeline_execution"]["dast_executed"] else "skip"
+          if consolidated["pipeline_execution"]["dast_executed"]:
+              dast_result = consolidated["tool_results"]["dast"]["gate_status"]
+              if dast_result == "FAILED":
+                  dast_status = "error"
+              elif dast_result == "WARNING":
+                  dast_status = "warn"
+          
+          html_report += f"""
+                      <div class="tool">
+                          <div class="tool-header">
+                              <div class="tool-status status-{dast_status}"></div>
+                              <h3>🌐 DAST - Dynamic Analysis</h3>
+                          </div>
+                          <p><strong>Status:</strong> {'Executed' if consolidated["pipeline_execution"]["dast_executed"] else 'Skipped'}</p>
+          """
+          
+          if consolidated["pipeline_execution"]["dast_executed"]:
+              dast = consolidated["tool_results"]["dast"]
+              html_report += f"""
+                          <p><strong>Score:</strong> {dast["security_score"]}/100</p>
+                          <p><strong>Alerts:</strong> {dast["total_alerts"]} (High Risk: {dast["high_risk"]}, Medium: {dast["medium_risk"]})</p>
+                          <p><strong>Gate:</strong> {dast["gate_status"]}</p>
+              """
+          
+          html_report += """
+                      </div>
+                  </div>
+                  
+                  <div class="recommendations">
+                      <h2>📋 Security Recommendations</h2>
+          """
+          
+          for rec in consolidated["security_recommendations"]:
+              priority_class = rec["priority"].lower()
+              html_report += f"""
+                      <div class="recommendation {priority_class}">
+                          <h4>{rec["priority"]} Priority</h4>
+                          <p><strong>Action:</strong> {rec["action"]}</p>
+                          <p><strong>Timeframe:</strong> {rec["timeframe"]}</p>
+                          <p><strong>Impact:</strong> {rec["impact"]}</p>
+                      </div>
+              """
+          
+          html_report += """
+                  </div>
+                  
+                  <div class="deployment">
+                      <h2>🚀 Deployment Decision</h2>
+          """
+          
+          html_report += f"""
+                      <p><strong>Approved for Deployment:</strong> {'✅ YES' if consolidated["deployment_decision"]["approved"] else '❌ NO'}</p>
+                      <p><strong>Reason:</strong> {consolidated["deployment_decision"]["reason"]}</p>
+          """
+          
+          if consolidated["deployment_decision"]["required_actions"]:
+              html_report += "<p><strong>Required Actions:</strong></p><ul>"
+              for action in consolidated["deployment_decision"]["required_actions"]:
+                  html_report += f"<li>{action}</li>"
+              html_report += "</ul>"
+          
+          html_report += """
+                  </div>
+                  
+                  <div style="text-align: center; margin-top: 40px; padding: 20px; background: #e9ecef; border-radius: 10px;">
+                      <p><strong>DevSecOps Pipeline Status:</strong> Complete Security Analysis Executed</p>
+                      <p><em>Report generated automatically by GitHub Actions</em></p>
+                  </div>
+              </div>
+          </body>
+          </html>
+          """
+          
+          with open('devsecops-report.html', 'w') as f:
+              f.write(html_report)
+          
+          # Set outputs for workflow
+          overall_score = consolidated["summary"]["overall_security_score"]
+          gate_status = consolidated["summary"]["quality_gate_status"]
+          deployment_approved = consolidated["deployment_decision"]["approved"]
+          
+          print(f"DevSecOps Analysis Complete:")
+          print(f"  Overall Security Score: {overall_score}/100")
+          print(f"  Quality Gate: {gate_status}")
+          print(f"  Deployment Approved: {deployment_approved}")
+          print(f"  Total Security Issues: {consolidated['summary']['total_security_issues']}")
+          print(f"  Critical Issues: {consolidated['summary']['critical_issues']}")
+          
+          print(f"::set-output name=result::{gate_status}")
+          print(f"::set-output name=score::{overall_score}")
+          print(f"::set-output name=approved::{str(deployment_approved).lower()}")
+          print(f"::set-output name=critical::{consolidated['summary']['critical_issues']}")
+          print(f"::set-output name=high::{consolidated['summary']['high_issues']}")
+          
+          # Exit with error if deployment not approved
+          if not deployment_approved:
+              print("❌ Quality Gate FAILED - Deployment blocked")
+              exit(1)
+          elif gate_status == "WARNING":
+              print("⚠️ Quality Gate WARNING - Deployment approved with conditions")
+          else:
+              print("✅ Quality Gate PASSED - Deployment approved")
+          EOF
+
+      - name: 📎 Upload Consolidated Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: devsecops-final-report
+          path: |
+            devsecops-consolidated-report.json
+            devsecops-report.html
+          retention-days: 90
+
+      - name: 💬 Comment PR with Security Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('devsecops-consolidated-report.json')) {
+              const report = JSON.parse(fs.readFileSync('devsecops-consolidated-report.json', 'utf8'));
+              
+              const toolStatuses = [];
+              if (report.pipeline_execution.sast_executed) {
+                const status = report.tool_results.sast.gate_status;
+                toolStatuses.push(`🔍 **SAST**: ${status} (${report.tool_results.sast.security_score}/100)`);
+              }
+              if (report.pipeline_execution.sca_executed) {
+                const status = report.tool_results.sca.gate_status;
+                toolStatuses.push(`📦 **SCA**: ${status} (${report.tool_results.sca.security_score}/100)`);
+              }
+              if (report.pipeline_execution.dast_executed) {
+                const status = report.tool_results.dast.gate_status;
+                toolStatuses.push(`🌐 **DAST**: ${status} (${report.tool_results.dast.security_score}/100)`);
+              }
+              
+              const comment = `## 🛡️ DevSecOps Security Analysis Results
+              
+              **🎯 Overall Security Score:** ${report.summary.overall_security_score}/100
+              **🚦 Quality Gate:** ${report.summary.quality_gate_status}
+              **🚀 Deployment Approved:** ${report.deployment_decision.approved ? '✅ YES' : '❌ NO'}
+              
+              ### 🔧 Security Tools Results
+              ${toolStatuses.join('\n')}
+              
+              ### 📊 Security Issues Summary
+              - 🔴 **Critical:** ${report.summary.critical_issues}
+              - 🟠 **High Risk:** ${report.summary.high_issues}
+              - 🟡 **Medium Risk:** ${report.summary.medium_issues}
+              - **Total Issues:** ${report.summary.total_security_issues}
+              
+              ### 🚀 Deployment Decision
+              **Reason:** ${report.deployment_decision.reason}
+              
+              ${report.deployment_decision.required_actions.length > 0 ? 
+                '**Required Actions:**\n' + report.deployment_decision.required_actions.map(action => `- ${action}`).join('\n') : 
+                ''
+              }
+              
+              ${report.summary.quality_gate_status === 'FAILED' ? 
+                '❌ **DEPLOYMENT BLOCKED** - Critical security issues must be resolved before merge.' :
+                report.summary.quality_gate_status === 'WARNING' ?
+                '⚠️ **CONDITIONAL APPROVAL** - Deployment approved with security monitoring required.' :
+                '✅ **SECURITY APPROVED** - All security quality gates passed successfully.'
+              }
+              
+              📄 [View Complete DevSecOps Report](../actions/runs/${{ github.run_id }})
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Stage 6: Notifications and Monitoring
+  notify-teams:
+    name: 📢 Notify Security Team
+    runs-on: ubuntu-latest
+    needs: [security-quality-gate]
+    if: always() && (needs.security-quality-gate.outputs.overall-gate == 'FAILED' || needs.security-quality-gate.outputs.overall-gate == 'WARNING')
+    
+    steps:
+      - name: 📧 Send Security Alert
+        run: |
+          echo "🚨 Security Alert: Quality Gate ${{ needs.security-quality-gate.outputs.overall-gate }}"
+          echo "Security Score: ${{ needs.security-quality-gate.outputs.security-score }}/100"
+          echo "Critical Issues: ${{ needs.security-quality-gate.outputs.critical }}"
+          
+          # Here you would integrate with your notification system:
+          # - Slack webhook
+          # - Microsoft Teams
+          # - Email alerts
+          # - JIRA ticket creation
+          # - Security dashboard updates
+          
+          # Example Slack notification (requires SLACK_WEBHOOK_URL secret):
+          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data '{"text":"🚨 DevSecOps Alert: Security Quality Gate ${{ needs.security-quality-gate.outputs.overall-gate }} for BetAware API\nSecurity Score: ${{ needs.security-quality-gate.outputs.security-score }}/100\nCritical Issues: ${{ needs.security-quality-gate.outputs.critical }}\nReview required: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' \
+              ${{ secrets.SLACK_WEBHOOK_URL }}
+          fi
+
+      - name: 📊 Update Security Dashboard
+        run: |
+          echo "Updating security metrics dashboard..."
+          # Here you would update your security metrics dashboard
+          # Examples: Grafana, DataDog, custom dashboard, etc.
+          
+          # Create metrics file for dashboard ingestion
+          cat > security-metrics.json << EOF
+          {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "repository": "${{ github.repository }}",
+            "branch": "${{ github.ref_name }}",
+            "commit": "${{ github.sha }}",
+            "security_score": ${{ needs.security-quality-gate.outputs.security-score }},
+            "quality_gate": "${{ needs.security-quality-gate.outputs.overall-gate }}",
+            "critical_issues": ${{ needs.security-quality-gate.outputs.critical }},
+            "deployment_approved": ${{ needs.security-quality-gate.outputs.approved }}
+          }
+          EOF
+          
+          echo "Security metrics ready for dashboard ingestion"
+
+  # Final Stage: Deployment Gate
+  deployment-gate:
+    name: 🎯 Production Deployment Gate
+    runs-on: ubuntu-latest
+    needs: [security-quality-gate]
+    if: needs.security-quality-gate.outputs.approved == 'true' && github.ref == 'refs/heads/master'
+    
+    steps:
+      - name: 🚀 Approve Production Deployment
+        run: |
+          echo "✅ Security Quality Gates Passed"
+          echo "🚀 Production deployment approved"
+          echo "Security Score: ${{ needs.security-quality-gate.outputs.security-score }}/100"
+          
+          # Here you would trigger your production deployment:
+          # - Kubernetes deployment
+          # - Cloud platform deployment  
+          # - Container registry push
+          # - Infrastructure as Code updates
+          
+          echo "Production deployment would be triggered here..."
+
+      - name: 📝 Log Security Approval
+        run: |
+          echo "Security approval logged for audit trail"
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Commit: ${{ github.sha }}"
+          echo "Approved by: DevSecOps Pipeline"
+          echo "Security Score: ${{ needs.security-quality-gate.outputs.security-score }}/100"

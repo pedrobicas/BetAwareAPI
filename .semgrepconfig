@@ -1,0 +1,37 @@
+# Semgrep SAST Configuration
+# Configuration for automated static analysis security testing
+
+# Rulesets to include
+rules:
+  # Core security rules
+  - p/security-audit
+  - p/owasp-top-ten
+  - p/java-security
+  - p/spring
+  - p/jwt
+
+# Custom rules specific to this project
+include:
+  - .semgrep.yml
+
+# Files and directories to exclude from scanning
+exclude:
+  - "target/"
+  - "*.class"
+  - "*.jar"
+  - "docs/"
+  - "*.md"
+  - ".git/"
+
+# Severity levels to report
+severity:
+  - ERROR
+  - WARNING
+  - INFO
+
+# Output configuration
+output_format: json
+output_file: semgrep-report.json
+
+# Metrics and telemetry
+metrics: on

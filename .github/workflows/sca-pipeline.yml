@@ -1,0 +1,1128 @@
+name: 📦 SCA - Software Composition Analysis
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master ]
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx3072m'
+
+jobs:
+  dependency-check-analysis:
+    name: 🔍 OWASP Dependency Check
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 📦 Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+
+      - name: 🔄 Update Dependency Check Database
+        run: |
+          echo "Updating CVE database..."
+          mvn org.owasp:dependency-check-maven:update-only
+
+      - name: 🔍 Run OWASP Dependency Check
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -Dformat=ALL \
+            -DfailBuildOnCVSS=7 \
+            -DsuppressedFile=.dependency-check/suppressions.xml \
+            -DretireJsAnalyzerEnabled=true \
+            -DnodeAnalyzerEnabled=false \
+            -DassemblyAnalyzerEnabled=true
+        continue-on-error: true
+
+      - name: 📊 Process Dependency Check Results
+        run: |
+          python3 << 'EOF'
+          import json
+          import xml.etree.ElementTree as ET
+          import os
+          from datetime import datetime
+          import glob
+          
+          # Initialize report structure
+          report = {
+              "tool": "OWASP Dependency Check",
+              "timestamp": datetime.now().isoformat(),
+              "scan_type": "Software Composition Analysis",
+              "summary": {
+                  "total_dependencies": 0,
+                  "vulnerable_dependencies": 0,
+                  "total_vulnerabilities": 0,
+                  "critical_vulnerabilities": 0,
+                  "high_vulnerabilities": 0,
+                  "medium_vulnerabilities": 0,
+                  "low_vulnerabilities": 0,
+                  "risk_score": 100
+              },
+              "dependencies": [],
+              "vulnerabilities": [],
+              "recommendations": []
+          }
+          
+          # Find and process XML report
+          xml_files = glob.glob("target/dependency-check-report.xml")
+          if xml_files:
+              try:
+                  tree = ET.parse(xml_files[0])
+                  root = tree.getroot()
+                  
+                  # Count total dependencies
+                  dependencies = root.findall(".//dependency")
+                  report["summary"]["total_dependencies"] = len(dependencies)
+                  
+                  # Process each dependency
+                  for dep in dependencies:
+                      dep_info = {
+                          "fileName": dep.get("fileName", "unknown"),
+                          "filePath": dep.get("filePath", "unknown"),
+                          "md5": dep.get("md5", ""),
+                          "sha1": dep.get("sha1", ""),
+                          "vulnerabilities": [],
+                          "licenses": []
+                      }
+                      
+                      # Extract identifiers
+                      identifiers = dep.findall(".//identifier")
+                      for identifier in identifiers:
+                          if identifier.get("type") == "maven":
+                              dep_info["maven_coords"] = identifier.get("name", "")
+                      
+                      # Extract licenses
+                      licenses = dep.findall(".//license")
+                      for license_elem in licenses:
+                          license_name = license_elem.get("name", "Unknown")
+                          dep_info["licenses"].append(license_name)
+                      
+                      # Extract vulnerabilities
+                      vulnerabilities = dep.findall(".//vulnerability")
+                      for vuln in vulnerabilities:
+                          vuln_info = {
+                              "name": vuln.get("name", ""),
+                              "severity": "UNKNOWN",
+                              "cvssScore": 0.0,
+                              "description": "",
+                              "references": [],
+                              "cwe": ""
+                          }
+                          
+                          # Extract CVSS score and severity
+                          cvss_elem = vuln.find(".//cvssScore")
+                          if cvss_elem is not None:
+                              try:
+                                  score = float(cvss_elem.text)
+                                  vuln_info["cvssScore"] = score
+                                  
+                                  # Determine severity based on CVSS score
+                                  if score >= 9.0:
+                                      vuln_info["severity"] = "CRITICAL"
+                                      report["summary"]["critical_vulnerabilities"] += 1
+                                  elif score >= 7.0:
+                                      vuln_info["severity"] = "HIGH"
+                                      report["summary"]["high_vulnerabilities"] += 1
+                                  elif score >= 4.0:
+                                      vuln_info["severity"] = "MEDIUM"
+                                      report["summary"]["medium_vulnerabilities"] += 1
+                                  else:
+                                      vuln_info["severity"] = "LOW"
+                                      report["summary"]["low_vulnerabilities"] += 1
+                              except:
+                                  pass
+                          
+                          # Extract description
+                          desc_elem = vuln.find(".//description")
+                          if desc_elem is not None:
+                              vuln_info["description"] = desc_elem.text or ""
+                          
+                          # Extract CWE
+                          cwe_elem = vuln.find(".//cwe")
+                          if cwe_elem is not None:
+                              vuln_info["cwe"] = cwe_elem.text or ""
+                          
+                          # Extract references
+                          references = vuln.findall(".//reference")
+                          for ref in references:
+                              ref_info = {
+                                  "source": ref.get("source", ""),
+                                  "url": ref.get("url", ""),
+                                  "name": ref.get("name", "")
+                              }
+                              vuln_info["references"].append(ref_info)
+                          
+                          dep_info["vulnerabilities"].append(vuln_info)
+                          report["vulnerabilities"].append({
+                              "dependency": dep_info["fileName"],
+                              "vulnerability": vuln_info
+                          })
+                      
+                      if dep_info["vulnerabilities"]:
+                          report["summary"]["vulnerable_dependencies"] += 1
+                      
+                      report["dependencies"].append(dep_info)
+                  
+                  report["summary"]["total_vulnerabilities"] = (
+                      report["summary"]["critical_vulnerabilities"] +
+                      report["summary"]["high_vulnerabilities"] +
+                      report["summary"]["medium_vulnerabilities"] +
+                      report["summary"]["low_vulnerabilities"]
+                  )
+                  
+              except Exception as e:
+                  print(f"Error processing XML report: {e}")
+          
+          # Check for JSON report as fallback
+          json_files = glob.glob("target/dependency-check-report.json")
+          if json_files and report["summary"]["total_dependencies"] == 0:
+              try:
+                  with open(json_files[0], 'r') as f:
+                      data = json.load(f)
+                  
+                  if 'dependencies' in data:
+                      report["summary"]["total_dependencies"] = len(data['dependencies'])
+                      
+                      for dep in data['dependencies']:
+                          dep_info = {
+                              "fileName": dep.get("fileName", "unknown"),
+                              "filePath": dep.get("filePath", "unknown"),
+                              "vulnerabilities": []
+                          }
+                          
+                          if 'vulnerabilities' in dep:
+                              for vuln in dep['vulnerabilities']:
+                                  severity = vuln.get('severity', 'UNKNOWN')
+                                  
+                                  if severity == 'CRITICAL':
+                                      report["summary"]["critical_vulnerabilities"] += 1
+                                  elif severity == 'HIGH':
+                                      report["summary"]["high_vulnerabilities"] += 1
+                                  elif severity == 'MEDIUM':
+                                      report["summary"]["medium_vulnerabilities"] += 1
+                                  elif severity == 'LOW':
+                                      report["summary"]["low_vulnerabilities"] += 1
+                                  
+                                  dep_info["vulnerabilities"].append(vuln)
+                          
+                          if dep_info["vulnerabilities"]:
+                              report["summary"]["vulnerable_dependencies"] += 1
+                          
+                          report["dependencies"].append(dep_info)
+                      
+                      report["summary"]["total_vulnerabilities"] = (
+                          report["summary"]["critical_vulnerabilities"] +
+                          report["summary"]["high_vulnerabilities"] +
+                          report["summary"]["medium_vulnerabilities"] +
+                          report["summary"]["low_vulnerabilities"]
+                      )
+                      
+              except Exception as e:
+                  print(f"Error processing JSON report: {e}")
+          
+          # Calculate risk score
+          base_score = 100
+          critical_deduction = report["summary"]["critical_vulnerabilities"] * 40
+          high_deduction = report["summary"]["high_vulnerabilities"] * 25
+          medium_deduction = report["summary"]["medium_vulnerabilities"] * 10
+          low_deduction = report["summary"]["low_vulnerabilities"] * 2
+          
+          risk_score = max(0, base_score - critical_deduction - high_deduction - medium_deduction - low_deduction)
+          report["summary"]["risk_score"] = risk_score
+          
+          # Generate recommendations
+          if report["summary"]["critical_vulnerabilities"] > 0:
+              report["recommendations"].append({
+                  "priority": "CRITICAL",
+                  "action": f"Immediately update {report['summary']['critical_vulnerabilities']} dependencies with critical vulnerabilities",
+                  "impact": "Critical security risk - immediate action required"
+              })
+          
+          if report["summary"]["high_vulnerabilities"] > 0:
+              report["recommendations"].append({
+                  "priority": "HIGH", 
+                  "action": f"Update {report['summary']['high_vulnerabilities']} dependencies with high-severity vulnerabilities",
+                  "impact": "High security risk - update within 7 days"
+              })
+          
+          if report["summary"]["medium_vulnerabilities"] > 5:
+              report["recommendations"].append({
+                  "priority": "MEDIUM",
+                  "action": f"Review and update {report['summary']['medium_vulnerabilities']} dependencies with medium-severity issues",
+                  "impact": "Moderate security risk - plan updates in next sprint"
+              })
+          
+          # Analyze license risks
+          all_licenses = []
+          for dep in report["dependencies"]:
+              all_licenses.extend(dep.get("licenses", []))
+          
+          risky_licenses = ["GPL", "AGPL", "LGPL"]
+          license_risks = [lic for lic in all_licenses if any(risk in lic.upper() for risk in risky_licenses)]
+          
+          if license_risks:
+              report["recommendations"].append({
+                  "priority": "MEDIUM",
+                  "action": f"Review {len(set(license_risks))} dependencies with potentially restrictive licenses",
+                  "impact": "Legal compliance risk - review license compatibility"
+              })
+          
+          # Save detailed report
+          with open('sca-dependency-check-detailed.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          # Create summary
+          summary = f"""
+          ## 🔍 OWASP Dependency Check Results
+          
+          **Risk Score**: {report['summary']['risk_score']}/100
+          **Dependencies Scanned**: {report['summary']['total_dependencies']}
+          **Vulnerable Dependencies**: {report['summary']['vulnerable_dependencies']}
+          
+          **Vulnerabilities Found**: {report['summary']['total_vulnerabilities']}
+          - 🔴 Critical: {report['summary']['critical_vulnerabilities']}
+          - 🟠 High: {report['summary']['high_vulnerabilities']}
+          - 🟡 Medium: {report['summary']['medium_vulnerabilities']}
+          - 🔵 Low: {report['summary']['low_vulnerabilities']}
+          
+          **Quality Gate**: {'❌ FAILED' if report['summary']['critical_vulnerabilities'] > 0 or report['summary']['high_vulnerabilities'] > 5 else '⚠️ WARNING' if report['summary']['high_vulnerabilities'] > 0 or report['summary']['medium_vulnerabilities'] > 10 else '✅ PASSED'}
+          """
+          
+          with open('dependency-check-summary.md', 'w') as f:
+              f.write(summary)
+          
+          print(f"Dependency Check completed - {report['summary']['total_vulnerabilities']} vulnerabilities found")
+          print(f"::set-output name=total_vulns::{report['summary']['total_vulnerabilities']}")
+          print(f"::set-output name=critical_vulns::{report['summary']['critical_vulnerabilities']}")
+          print(f"::set-output name=risk_score::{report['summary']['risk_score']}")
+          EOF
+
+      - name: 📎 Upload Dependency Check Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-results
+          path: |
+            target/dependency-check-report.*
+            sca-dependency-check-detailed.json
+            dependency-check-summary.md
+          retention-days: 30
+
+      - name: 📤 Upload to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: target/dependency-check-report.sarif
+        continue-on-error: true
+
+  snyk-analysis:
+    name: 🛡️ Snyk Security Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 🛡️ Run Snyk to check for vulnerabilities
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=low --json-file-output=snyk-report.json
+        continue-on-error: true
+
+      - name: 🛡️ Run Snyk Code Analysis
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: code test
+          args: --json-file-output=snyk-code-report.json
+        continue-on-error: true
+
+      - name: 🔍 Run Snyk License Check
+        run: |
+          if [[ -n "${{ secrets.SNYK_TOKEN }}" ]]; then
+            npx snyk auth ${{ secrets.SNYK_TOKEN }}
+            npx snyk test --json > snyk-license-report.json || true
+          else
+            echo "Snyk token not available, skipping license check"
+            echo '{"vulnerabilities": [], "summary": {"total": 0}}' > snyk-license-report.json
+          fi
+        continue-on-error: true
+
+      - name: 📊 Process Snyk Results
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          
+          # Initialize Snyk report
+          report = {
+              "tool": "Snyk",
+              "timestamp": datetime.now().isoformat(),
+              "scan_types": ["vulnerability", "code_analysis", "license"],
+              "summary": {
+                  "total_issues": 0,
+                  "vulnerability_issues": 0,
+                  "code_issues": 0,
+                  "license_issues": 0,
+                  "critical_severity": 0,
+                  "high_severity": 0,
+                  "medium_severity": 0,
+                  "low_severity": 0,
+                  "security_score": 100
+              },
+              "vulnerabilities": [],
+              "code_issues": [],
+              "license_issues": [],
+              "recommendations": []
+          }
+          
+          # Process vulnerability report
+          if os.path.exists('snyk-report.json'):
+              try:
+                  with open('snyk-report.json', 'r') as f:
+                      vuln_data = json.load(f)
+                  
+                  if 'vulnerabilities' in vuln_data:
+                      for vuln in vuln_data['vulnerabilities']:
+                          vuln_info = {
+                              "id": vuln.get('id', ''),
+                              "title": vuln.get('title', ''),
+                              "severity": vuln.get('severity', 'unknown'),
+                              "package": vuln.get('packageName', ''),
+                              "version": vuln.get('version', ''),
+                              "description": vuln.get('description', ''),
+                              "upgrade_path": vuln.get('upgradePath', []),
+                              "cve": vuln.get('identifiers', {}).get('CVE', []),
+                              "cwe": vuln.get('identifiers', {}).get('CWE', [])
+                          }
+                          
+                          report['vulnerabilities'].append(vuln_info)
+                          report['summary']['vulnerability_issues'] += 1
+                          
+                          # Count by severity
+                          severity = vuln_info['severity'].lower()
+                          if severity == 'critical':
+                              report['summary']['critical_severity'] += 1
+                          elif severity == 'high':
+                              report['summary']['high_severity'] += 1
+                          elif severity == 'medium':
+                              report['summary']['medium_severity'] += 1
+                          elif severity == 'low':
+                              report['summary']['low_severity'] += 1
+                  
+              except Exception as e:
+                  print(f"Error processing Snyk vulnerability report: {e}")
+          
+          # Process code analysis report
+          if os.path.exists('snyk-code-report.json'):
+              try:
+                  with open('snyk-code-report.json', 'r') as f:
+                      code_data = json.load(f)
+                  
+                  if 'runs' in code_data and code_data['runs']:
+                      for run in code_data['runs']:
+                          if 'results' in run:
+                              for result in run['results']:
+                                  code_issue = {
+                                      "rule_id": result.get('ruleId', ''),
+                                      "message": result.get('message', {}).get('text', ''),
+                                      "severity": result.get('level', 'info'),
+                                      "file": '',
+                                      "line": 0
+                                  }
+                                  
+                                  # Extract location info
+                                  if 'locations' in result and result['locations']:
+                                      location = result['locations'][0]
+                                      if 'physicalLocation' in location:
+                                          phys_loc = location['physicalLocation']
+                                          code_issue['file'] = phys_loc.get('artifactLocation', {}).get('uri', '')
+                                          if 'region' in phys_loc:
+                                              code_issue['line'] = phys_loc['region'].get('startLine', 0)
+                                  
+                                  report['code_issues'].append(code_issue)
+                                  report['summary']['code_issues'] += 1
+                                  
+                                  # Count severity for code issues
+                                  if result.get('level') == 'error':
+                                      report['summary']['high_severity'] += 1
+                                  elif result.get('level') == 'warning':
+                                      report['summary']['medium_severity'] += 1
+                                  else:
+                                      report['summary']['low_severity'] += 1
+                  
+              except Exception as e:
+                  print(f"Error processing Snyk code report: {e}")
+          
+          # Process license report
+          if os.path.exists('snyk-license-report.json'):
+              try:
+                  with open('snyk-license-report.json', 'r') as f:
+                      license_data = json.load(f)
+                  
+                  if 'vulnerabilities' in license_data:
+                      for issue in license_data['vulnerabilities']:
+                          if issue.get('type') == 'license':
+                              license_issue = {
+                                  "package": issue.get('packageName', ''),
+                                  "license": issue.get('license', ''),
+                                  "severity": issue.get('severity', 'medium'),
+                                  "issue": issue.get('title', '')
+                              }
+                              report['license_issues'].append(license_issue)
+                              report['summary']['license_issues'] += 1
+                              
+                              # License issues are typically medium severity
+                              report['summary']['medium_severity'] += 1
+                  
+              except Exception as e:
+                  print(f"Error processing Snyk license report: {e}")
+          
+          # Calculate total issues and security score
+          report['summary']['total_issues'] = (
+              report['summary']['vulnerability_issues'] +
+              report['summary']['code_issues'] +
+              report['summary']['license_issues']
+          )
+          
+          base_score = 100
+          critical_deduction = report['summary']['critical_severity'] * 30
+          high_deduction = report['summary']['high_severity'] * 20
+          medium_deduction = report['summary']['medium_severity'] * 8
+          low_deduction = report['summary']['low_severity'] * 2
+          
+          security_score = max(0, base_score - critical_deduction - high_deduction - medium_deduction - low_deduction)
+          report['summary']['security_score'] = security_score
+          
+          # Generate recommendations
+          if report['summary']['critical_severity'] > 0:
+              report['recommendations'].append({
+                  "priority": "CRITICAL",
+                  "action": f"Immediately address {report['summary']['critical_severity']} critical security issues",
+                  "category": "vulnerability_management",
+                  "timeframe": "0-24 hours"
+              })
+          
+          if report['summary']['vulnerability_issues'] > 0:
+              upgradeable = len([v for v in report['vulnerabilities'] if v.get('upgrade_path')])
+              report['recommendations'].append({
+                  "priority": "HIGH",
+                  "action": f"Update {upgradeable} dependencies with available security patches",
+                  "category": "dependency_management", 
+                  "timeframe": "1-7 days"
+              })
+          
+          if report['summary']['code_issues'] > 5:
+              report['recommendations'].append({
+                  "priority": "MEDIUM",
+                  "action": f"Review and fix {report['summary']['code_issues']} code quality issues",
+                  "category": "code_quality",
+                  "timeframe": "1-2 weeks"
+              })
+          
+          if report['summary']['license_issues'] > 0:
+              report['recommendations'].append({
+                  "priority": "MEDIUM",
+                  "action": f"Review {report['summary']['license_issues']} license compliance issues",
+                  "category": "legal_compliance",
+                  "timeframe": "2-4 weeks"
+              })
+          
+          # Save detailed report
+          with open('sca-snyk-detailed.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          # Create summary
+          summary = f"""
+          ## 🛡️ Snyk Security Analysis Results
+          
+          **Security Score**: {report['summary']['security_score']}/100
+          **Total Issues**: {report['summary']['total_issues']}
+          
+          **Issue Breakdown**:
+          - 🔍 Vulnerabilities: {report['summary']['vulnerability_issues']}
+          - 💻 Code Issues: {report['summary']['code_issues']}
+          - 📄 License Issues: {report['summary']['license_issues']}
+          
+          **Severity Distribution**:
+          - 🔴 Critical: {report['summary']['critical_severity']}
+          - 🟠 High: {report['summary']['high_severity']}
+          - 🟡 Medium: {report['summary']['medium_severity']}
+          - 🔵 Low: {report['summary']['low_severity']}
+          
+          **Quality Gate**: {'❌ FAILED' if report['summary']['critical_severity'] > 0 else '⚠️ WARNING' if report['summary']['high_severity'] > 3 else '✅ PASSED'}
+          """
+          
+          with open('snyk-summary.md', 'w') as f:
+              f.write(summary)
+          
+          print(f"Snyk analysis completed - {report['summary']['total_issues']} total issues found")
+          print(f"::set-output name=total_issues::{report['summary']['total_issues']}")
+          print(f"::set-output name=critical_issues::{report['summary']['critical_severity']}")
+          print(f"::set-output name=security_score::{report['summary']['security_score']}")
+          EOF
+
+      - name: 📎 Upload Snyk Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-analysis-results
+          path: |
+            snyk-report.json
+            snyk-code-report.json
+            snyk-license-report.json
+            sca-snyk-detailed.json
+            snyk-summary.md
+          retention-days: 30
+
+      - name: 📤 Upload Snyk results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+        continue-on-error: true
+
+  consolidate-sca-results:
+    name: 📋 Consolidate SCA Results
+    needs: [dependency-check-analysis, snyk-analysis]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    outputs:
+      sca-gate: ${{ steps.quality-gate.outputs.result }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download SCA artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sca-results
+
+      - name: 🔄 Consolidate SCA Reports
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          # Initialize consolidated SCA report
+          consolidated = {
+              "pipeline": "Software Composition Analysis (SCA)",
+              "timestamp": datetime.now().isoformat(),
+              "commit": os.environ.get('GITHUB_SHA', 'unknown'),
+              "branch": os.environ.get('GITHUB_REF_NAME', 'unknown'),
+              "tools_executed": [],
+              "summary": {
+                  "total_dependencies": 0,
+                  "vulnerable_dependencies": 0,
+                  "total_vulnerabilities": 0,
+                  "critical_vulnerabilities": 0,
+                  "high_vulnerabilities": 0,
+                  "medium_vulnerabilities": 0,
+                  "low_vulnerabilities": 0,
+                  "license_issues": 0,
+                  "code_quality_issues": 0,
+                  "overall_risk_score": 100,
+                  "quality_gate_status": "PASSED"
+              },
+              "dependency_analysis": {
+                  "owasp_dependency_check": {},
+                  "snyk_analysis": {}
+              },
+              "vulnerability_details": [],
+              "license_compliance": {
+                  "risky_licenses": [],
+                  "compliance_issues": []
+              },
+              "upgrade_recommendations": [],
+              "remediation_plan": []
+          }
+          
+          # Process OWASP Dependency Check results
+          dep_check_file = Path("sca-results/dependency-check-results/sca-dependency-check-detailed.json")
+          if dep_check_file.exists():
+              with open(dep_check_file) as f:
+                  dep_check_data = json.load(f)
+              
+              consolidated["tools_executed"].append("OWASP Dependency Check")
+              consolidated["dependency_analysis"]["owasp_dependency_check"] = dep_check_data
+              
+              # Aggregate dependency check data
+              summary = dep_check_data["summary"]
+              consolidated["summary"]["total_dependencies"] = summary.get("total_dependencies", 0)
+              consolidated["summary"]["vulnerable_dependencies"] += summary.get("vulnerable_dependencies", 0)
+              consolidated["summary"]["total_vulnerabilities"] += summary.get("total_vulnerabilities", 0)
+              consolidated["summary"]["critical_vulnerabilities"] += summary.get("critical_vulnerabilities", 0)
+              consolidated["summary"]["high_vulnerabilities"] += summary.get("high_vulnerabilities", 0)
+              consolidated["summary"]["medium_vulnerabilities"] += summary.get("medium_vulnerabilities", 0)
+              consolidated["summary"]["low_vulnerabilities"] += summary.get("low_vulnerabilities", 0)
+              
+              # Extract detailed vulnerabilities
+              for vuln in dep_check_data.get("vulnerabilities", []):
+                  consolidated["vulnerability_details"].append({
+                      "source": "OWASP Dependency Check",
+                      "dependency": vuln.get("dependency", ""),
+                      "vulnerability": vuln.get("vulnerability", {}),
+                      "upgrade_available": bool(vuln.get("vulnerability", {}).get("references", []))
+                  })
+          
+          # Process Snyk results
+          snyk_file = Path("sca-results/snyk-analysis-results/sca-snyk-detailed.json")
+          if snyk_file.exists():
+              with open(snyk_file) as f:
+                  snyk_data = json.load(f)
+              
+              consolidated["tools_executed"].append("Snyk")
+              consolidated["dependency_analysis"]["snyk_analysis"] = snyk_data
+              
+              # Aggregate Snyk data (avoiding double counting)
+              snyk_summary = snyk_data["summary"]
+              consolidated["summary"]["total_vulnerabilities"] += snyk_summary.get("vulnerability_issues", 0)
+              consolidated["summary"]["license_issues"] = snyk_summary.get("license_issues", 0)
+              consolidated["summary"]["code_quality_issues"] = snyk_summary.get("code_issues", 0)
+              
+              # Add unique vulnerabilities from Snyk
+              for vuln in snyk_data.get("vulnerabilities", []):
+                  # Check if this is a duplicate from dependency check
+                  is_duplicate = False
+                  for existing in consolidated["vulnerability_details"]:
+                      if (existing.get("dependency") == vuln.get("package") and 
+                          any(cve in str(existing) for cve in vuln.get("cve", []))):
+                          is_duplicate = True
+                          break
+                  
+                  if not is_duplicate:
+                      consolidated["vulnerability_details"].append({
+                          "source": "Snyk",
+                          "dependency": vuln.get("package", ""),
+                          "vulnerability": vuln,
+                          "upgrade_available": bool(vuln.get("upgrade_path", []))
+                      })
+              
+              # Process license issues
+              for license_issue in snyk_data.get("license_issues", []):
+                  consolidated["license_compliance"]["risky_licenses"].append({
+                      "package": license_issue.get("package", ""),
+                      "license": license_issue.get("license", ""),
+                      "risk_level": license_issue.get("severity", "medium"),
+                      "issue": license_issue.get("issue", "")
+                  })
+          
+          # Calculate overall risk score
+          base_score = 100
+          critical_deduction = consolidated["summary"]["critical_vulnerabilities"] * 25
+          high_deduction = consolidated["summary"]["high_vulnerabilities"] * 15
+          medium_deduction = consolidated["summary"]["medium_vulnerabilities"] * 7
+          low_deduction = consolidated["summary"]["low_vulnerabilities"] * 2
+          license_deduction = consolidated["summary"]["license_issues"] * 5
+          
+          overall_risk_score = max(0, base_score - critical_deduction - high_deduction - medium_deduction - low_deduction - license_deduction)
+          consolidated["summary"]["overall_risk_score"] = overall_risk_score
+          
+          # Determine quality gate status
+          if consolidated["summary"]["critical_vulnerabilities"] > 0:
+              consolidated["summary"]["quality_gate_status"] = "FAILED"
+          elif (consolidated["summary"]["high_vulnerabilities"] > 5 or 
+                overall_risk_score < 70):
+              consolidated["summary"]["quality_gate_status"] = "WARNING"
+          else:
+              consolidated["summary"]["quality_gate_status"] = "PASSED"
+          
+          # Generate upgrade recommendations
+          upgradeable_count = len([v for v in consolidated["vulnerability_details"] if v.get("upgrade_available")])
+          if upgradeable_count > 0:
+              consolidated["upgrade_recommendations"].append({
+                  "priority": "HIGH",
+                  "action": f"Update {upgradeable_count} dependencies with available security patches",
+                  "benefit": "Resolve known vulnerabilities with minimal effort",
+                  "effort": "Low - automated dependency updates"
+              })
+          
+          # Analyze licensing risks
+          gpl_licenses = [lic for lic in consolidated["license_compliance"]["risky_licenses"] 
+                         if "GPL" in lic.get("license", "").upper()]
+          if gpl_licenses:
+              consolidated["license_compliance"]["compliance_issues"].append({
+                  "type": "Copyleft License Risk",
+                  "affected_packages": len(gpl_licenses),
+                  "risk": "Legal compliance - may require source code disclosure",
+                  "recommendation": "Review license compatibility and consider alternatives"
+              })
+          
+          # Generate comprehensive remediation plan
+          if consolidated["summary"]["critical_vulnerabilities"] > 0:
+              consolidated["remediation_plan"].append({
+                  "phase": "Emergency Patching",
+                  "timeframe": "0-24 hours",
+                  "priority": "CRITICAL",
+                  "actions": [
+                      f"Immediately update {consolidated['summary']['critical_vulnerabilities']} dependencies with critical vulnerabilities",
+                      "Test updated dependencies in staging environment",
+                      "Deploy security patches to production"
+                  ],
+                  "success_criteria": "Zero critical vulnerabilities in production"
+              })
+          
+          if consolidated["summary"]["high_vulnerabilities"] > 0:
+              consolidated["remediation_plan"].append({
+                  "phase": "High Priority Security Updates",
+                  "timeframe": "1-7 days",
+                  "priority": "HIGH", 
+                  "actions": [
+                      f"Update {consolidated['summary']['high_vulnerabilities']} high-severity vulnerable dependencies",
+                      "Implement automated dependency scanning",
+                      "Establish dependency update policy"
+                  ],
+                  "success_criteria": "Less than 3 high-severity vulnerabilities"
+              })
+          
+          if consolidated["summary"]["medium_vulnerabilities"] > 10:
+              consolidated["remediation_plan"].append({
+                  "phase": "Medium Priority Maintenance",
+                  "timeframe": "1-4 weeks",
+                  "priority": "MEDIUM",
+                  "actions": [
+                      f"Review and update {consolidated['summary']['medium_vulnerabilities']} medium-severity issues",
+                      "Implement dependency health monitoring",
+                      "Train team on secure dependency management"
+                  ],
+                  "success_criteria": "Maintain medium vulnerabilities below 10"
+              })
+          
+          if consolidated["summary"]["license_issues"] > 0:
+              consolidated["remediation_plan"].append({
+                  "phase": "License Compliance Review",
+                  "timeframe": "2-8 weeks",
+                  "priority": "MEDIUM",
+                  "actions": [
+                      f"Legal review of {consolidated['summary']['license_issues']} license compliance issues",
+                      "Develop approved license policy", 
+                      "Implement license scanning in CI/CD"
+                  ],
+                  "success_criteria": "Zero license compliance violations"
+              })
+          
+          # Save consolidated report
+          with open('sca-consolidated-report.json', 'w') as f:
+              json.dump(consolidated, f, indent=2)
+          
+          # Generate comprehensive HTML report
+          html_report = f"""
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>SCA Security Analysis Report</title>
+              <style>
+                  body {{ font-family: Arial, sans-serif; margin: 20px; background: #f8f9fa; }}
+                  .container {{ max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+                  .header {{ background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 40px; border-radius: 15px; margin-bottom: 30px; }}
+                  .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 25px; margin: 30px 0; }}
+                  .metric {{ background: #f8f9fa; padding: 25px; border-radius: 12px; text-align: center; border-left: 5px solid #28a745; }}
+                  .metric h3 {{ margin: 0; font-size: 2.2em; color: #495057; }}
+                  .metric p {{ margin: 5px 0 0 0; color: #6c757d; font-weight: 500; }}
+                  .critical {{ color: #dc3545; }}
+                  .high {{ color: #fd7e14; }}
+                  .medium {{ color: #ffc107; }}
+                  .passed {{ color: #28a745; }}
+                  .failed {{ color: #dc3545; }}
+                  .warning {{ color: #fd7e14; }}
+                  .tools {{ background: #e9ecef; padding: 20px; border-radius: 10px; margin: 20px 0; }}
+                  .vulnerability {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }}
+                  .license-issue {{ background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }}
+                  table {{ width: 100%; border-collapse: collapse; margin: 25px 0; }}
+                  th, td {{ border: 1px solid #dee2e6; padding: 15px; text-align: left; }}
+                  th {{ background-color: #495057; color: white; }}
+                  .roadmap {{ background: #d4edda; padding: 25px; border-radius: 12px; margin: 25px 0; }}
+                  .phase {{ background: white; padding: 20px; margin: 15px 0; border-radius: 8px; border-left: 5px solid #28a745; }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>📦 Software Composition Analysis (SCA) Report</h1>
+                      <p><strong>Application:</strong> BetAware API</p>
+                      <p><strong>Generated:</strong> {consolidated['timestamp']}</p>
+                      <p><strong>Commit:</strong> {consolidated['commit']}</p>
+                      <p><strong>Branch:</strong> {consolidated['branch']}</p>
+                  </div>
+                  
+                  <div class="tools">
+                      <h3>🛠️ Analysis Tools Executed</h3>
+                      <ul>
+          """
+          
+          for tool in consolidated["tools_executed"]:
+              html_report += f'<li>✅ {tool}</li>'
+          
+          html_report += f"""
+                      </ul>
+                  </div>
+                  
+                  <div class="summary">
+                      <div class="metric">
+                          <h3>{overall_risk_score}</h3>
+                          <p>Risk Score</p>
+                      </div>
+                      <div class="metric">
+                          <h3 class="{'failed' if consolidated['summary']['quality_gate_status'] == 'FAILED' else 'warning' if consolidated['summary']['quality_gate_status'] == 'WARNING' else 'passed'}">{consolidated['summary']['quality_gate_status']}</h3>
+                          <p>Quality Gate</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['total_dependencies']}</h3>
+                          <p>Total Dependencies</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['vulnerable_dependencies']}</h3>
+                          <p>Vulnerable Dependencies</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['total_vulnerabilities']}</h3>
+                          <p>Total Vulnerabilities</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['license_issues']}</h3>
+                          <p>License Issues</p>
+                      </div>
+                  </div>
+                  
+                  <h2>📊 Vulnerability Breakdown</h2>
+                  <table>
+                      <tr>
+                          <th>Severity</th>
+                          <th>Count</th>
+                          <th>Risk Level</th>
+                          <th>Action Required</th>
+                      </tr>
+                      <tr>
+                          <td><span class="critical">🔴 Critical</span></td>
+                          <td>{consolidated['summary']['critical_vulnerabilities']}</td>
+                          <td>Extreme</td>
+                          <td>Immediate patch required (0-24 hours)</td>
+                      </tr>
+                      <tr>
+                          <td><span class="high">🟠 High</span></td>
+                          <td>{consolidated['summary']['high_vulnerabilities']}</td>
+                          <td>High</td>
+                          <td>Patch within 7 days</td>
+                      </tr>
+                      <tr>
+                          <td><span class="medium">🟡 Medium</span></td>
+                          <td>{consolidated['summary']['medium_vulnerabilities']}</td>
+                          <td>Moderate</td>
+                          <td>Plan update in next sprint</td>
+                      </tr>
+                      <tr>
+                          <td>🔵 Low</td>
+                          <td>{consolidated['summary']['low_vulnerabilities']}</td>
+                          <td>Low</td>
+                          <td>Update when convenient</td>
+                      </tr>
+                  </table>
+                  
+                  <h2>📋 Key Vulnerabilities</h2>
+          """
+          
+          # Show top 10 vulnerabilities
+          for i, vuln in enumerate(consolidated["vulnerability_details"][:10]):
+              source = vuln.get("source", "Unknown")
+              dependency = vuln.get("dependency", "Unknown")
+              vuln_data = vuln.get("vulnerability", {})
+              severity = vuln_data.get("severity", "unknown")
+              
+              html_report += f"""
+                  <div class="vulnerability">
+                      <strong>#{i+1} - {dependency}</strong> (via {source})<br>
+                      <strong>Severity:</strong> <span class="{severity.lower()}">{severity}</span><br>
+                      <strong>Issue:</strong> {vuln_data.get("title", vuln_data.get("name", "Unknown vulnerability"))}<br>
+                      <strong>Upgrade Available:</strong> {'✅ Yes' if vuln.get("upgrade_available") else '❌ No'}
+                  </div>
+              """
+          
+          if len(consolidated["vulnerability_details"]) > 10:
+              html_report += f'<p><em>... and {len(consolidated["vulnerability_details"]) - 10} more vulnerabilities</em></p>'
+          
+          html_report += """
+                  <h2>📄 License Compliance</h2>
+          """
+          
+          for license_issue in consolidated["license_compliance"]["risky_licenses"][:5]:
+              html_report += f"""
+                  <div class="license-issue">
+                      <strong>Package:</strong> {license_issue.get("package", "Unknown")}<br>
+                      <strong>License:</strong> {license_issue.get("license", "Unknown")}<br>
+                      <strong>Risk:</strong> {license_issue.get("risk_level", "Medium")}<br>
+                      <strong>Issue:</strong> {license_issue.get("issue", "License compliance concern")}
+                  </div>
+              """
+          
+          html_report += f"""
+                  <div class="roadmap">
+                      <h2>🛠️ Remediation Roadmap</h2>
+          """
+          
+          for phase in consolidated["remediation_plan"]:
+              html_report += f"""
+                      <div class="phase">
+                          <h3>{phase['phase']} ({phase['timeframe']})</h3>
+                          <p><strong>Priority:</strong> {phase['priority']}</p>
+                          <p><strong>Success Criteria:</strong> {phase['success_criteria']}</p>
+                          <ul>
+              """
+              for action in phase['actions']:
+                  html_report += f'<li>{action}</li>'
+              html_report += '</ul></div>'
+          
+          html_report += """
+                  </div>
+                  
+                  <h2>📈 Recommendations</h2>
+                  <ol>
+          """
+          
+          for rec in consolidated["upgrade_recommendations"]:
+              html_report += f'<li><strong>{rec["priority"]}:</strong> {rec["action"]} - <em>{rec["benefit"]}</em></li>'
+          
+          html_report += """
+                  </ol>
+                  
+                  <h2>🔍 Next Steps</h2>
+                  <ol>
+                      <li>Review and prioritize critical and high-severity vulnerabilities</li>
+                      <li>Update dependencies with available security patches</li>
+                      <li>Conduct license compliance review with legal team</li>
+                      <li>Implement automated dependency scanning in CI/CD pipeline</li>
+                      <li>Establish dependency update and security monitoring processes</li>
+                  </ol>
+                  
+              </div>
+          </body>
+          </html>
+          """
+          
+          with open('sca-report.html', 'w') as f:
+              f.write(html_report)
+          
+          print(f"SCA Analysis Complete - Risk Score: {overall_risk_score}/100")
+          print(f"Quality Gate: {consolidated['summary']['quality_gate_status']}")
+          print(f"::set-output name=risk_score::{overall_risk_score}")
+          print(f"::set-output name=quality_gate::{consolidated['summary']['quality_gate_status']}")
+          print(f"::set-output name=critical_vulns::{consolidated['summary']['critical_vulnerabilities']}")
+          EOF
+
+      - name: 🚦 SCA Quality Gate Decision
+        id: quality-gate
+        run: |
+          if [[ -f "sca-consolidated-report.json" ]]; then
+            QUALITY_GATE=$(python3 -c "
+            import json
+            with open('sca-consolidated-report.json') as f:
+                data = json.load(f)
+            print(data['summary']['quality_gate_status'])
+            ")
+            echo "result=$QUALITY_GATE" >> $GITHUB_OUTPUT
+            
+            if [[ "$QUALITY_GATE" == "FAILED" ]]; then
+              echo "❌ SCA Quality Gate FAILED - Critical vulnerabilities in dependencies"
+              exit 1
+            elif [[ "$QUALITY_GATE" == "WARNING" ]]; then
+              echo "⚠️ SCA Quality Gate WARNING - High-risk dependencies require attention"
+            else
+              echo "✅ SCA Quality Gate PASSED"
+            fi
+          else
+            echo "❌ SCA analysis failed - no report generated"
+            echo "result=FAILED" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 📎 Upload Consolidated SCA Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-final-report
+          path: |
+            sca-consolidated-report.json
+            sca-report.html
+          retention-days: 90
+
+      - name: 💬 Comment PR with SCA Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('sca-consolidated-report.json')) {
+              const report = JSON.parse(fs.readFileSync('sca-consolidated-report.json', 'utf8'));
+              
+              const comment = `## 📦 SCA Analysis Results
+              
+              **🎯 Risk Score:** ${report.summary.overall_risk_score}/100
+              **🚦 Quality Gate:** ${report.summary.quality_gate_status}
+              
+              ### 📊 Dependency Analysis
+              - **Total Dependencies:** ${report.summary.total_dependencies}
+              - **Vulnerable Dependencies:** ${report.summary.vulnerable_dependencies}
+              - **License Issues:** ${report.summary.license_issues}
+              
+              ### 🔍 Vulnerability Summary
+              - 🔴 **Critical:** ${report.summary.critical_vulnerabilities}
+              - 🟠 **High:** ${report.summary.high_vulnerabilities}
+              - 🟡 **Medium:** ${report.summary.medium_vulnerabilities}
+              - 🔵 **Low:** ${report.summary.low_vulnerabilities}
+              
+              ### 🛠️ Tools Executed
+              ${report.tools_executed.map(tool => `- ✅ ${tool}`).join('\n')}
+              
+              ${report.summary.quality_gate_status === 'FAILED' ? 
+                '❌ **Deployment Blocked** - Critical vulnerabilities in dependencies must be patched immediately.' :
+                report.summary.quality_gate_status === 'WARNING' ?
+                '⚠️ **Caution Required** - High-risk dependencies detected, review before production deployment.' :
+                '✅ **Dependencies Secure** - No critical vulnerabilities detected in project dependencies.'
+              }
+              
+              📄 [View Detailed SCA Report](../actions/runs/${{ github.run_id }})
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }

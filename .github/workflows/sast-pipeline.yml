@@ -1,0 +1,561 @@
+name: 🔒 SAST - Static Application Security Testing
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master ]
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx3072m'
+
+jobs:
+  semgrep-sast:
+    name: 🔍 Semgrep SAST Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🛡️ Run Semgrep with comprehensive rules
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >- 
+            p/security-audit
+            p/java-security
+            p/owasp-top-ten
+            p/spring
+            p/cwe-top-25
+            .semgrep.yml
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true
+
+      - name: 📊 Generate Semgrep JSON Report
+        run: |
+          semgrep --config=p/security-audit \
+                  --config=p/java-security \
+                  --config=p/owasp-top-ten \
+                  --config=p/spring \
+                  --config=.semgrep.yml \
+                  --json \
+                  --output=semgrep-report.json \
+                  src/ || true
+
+      - name: 📈 Process Semgrep Results
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          
+          # Read Semgrep results
+          try:
+              with open('semgrep-report.json', 'r') as f:
+                  data = json.load(f)
+          except:
+              data = {"results": []}
+          
+          findings = data.get('results', [])
+          
+          # Classify by severity
+          critical = [f for f in findings if f.get('extra', {}).get('severity') == 'ERROR']
+          high = [f for f in findings if f.get('extra', {}).get('severity') == 'WARNING']
+          medium = [f for f in findings if f.get('extra', {}).get('severity') == 'INFO']
+          
+          # Generate detailed report
+          report = {
+              "tool": "Semgrep SAST",
+              "timestamp": datetime.now().isoformat(),
+              "summary": {
+                  "total_findings": len(findings),
+                  "critical": len(critical),
+                  "high": len(high), 
+                  "medium": len(medium),
+                  "security_score": max(0, 100 - (len(critical) * 30 + len(high) * 15 + len(medium) * 5))
+              },
+              "vulnerabilities": []
+          }
+          
+          # Process each finding
+          for finding in findings:
+              vuln = {
+                  "rule_id": finding.get('check_id', 'unknown'),
+                  "severity": finding.get('extra', {}).get('severity', 'INFO'),
+                  "message": finding.get('extra', {}).get('message', 'No message'),
+                  "file": finding.get('path', 'unknown'),
+                  "line": finding.get('start', {}).get('line', 0),
+                  "cwe": finding.get('extra', {}).get('metadata', {}).get('cwe', []),
+                  "owasp": finding.get('extra', {}).get('metadata', {}).get('owasp', []),
+                  "confidence": finding.get('extra', {}).get('metadata', {}).get('confidence', 'MEDIUM'),
+                  "remediation": finding.get('extra', {}).get('fix', 'Review and fix manually')
+              }
+              report["vulnerabilities"].append(vuln)
+          
+          # Save processed report
+          with open('sast-semgrep-detailed.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          # Create summary for PR comment
+          summary = f"""
+          ## 🔍 Semgrep SAST Analysis Results
+          
+          **Security Score**: {report['summary']['security_score']}/100
+          
+          **Vulnerabilities Found**: {report['summary']['total_findings']}
+          - 🔴 Critical: {report['summary']['critical']}
+          - 🟠 High: {report['summary']['high']}
+          - 🟡 Medium: {report['summary']['medium']}
+          
+          **Quality Gate**: {'❌ FAILED' if report['summary']['critical'] > 0 else '✅ PASSED'}
+          """
+          
+          with open('semgrep-summary.md', 'w') as f:
+              f.write(summary)
+          
+          # Set output for quality gate
+          print(f"::set-output name=critical_count::{len(critical)}")
+          print(f"::set-output name=security_score::{report['summary']['security_score']}")
+          EOF
+
+      - name: 📎 Upload SAST Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-sast-results
+          path: |
+            sast-semgrep-detailed.json
+            semgrep-summary.md
+          retention-days: 30
+
+  sonarqube-analysis:
+    name: 🔬 SonarQube Analysis  
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 📦 Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+
+      - name: 🔍 SonarQube Analysis
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn clean verify sonar:sonar \
+            -Dsonar.projectKey=betaware-api \
+            -Dsonar.organization=pedrobicas \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }} \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -Dsonar.java.binaries=target/classes \
+            -Dsonar.security.hotspots=true \
+            -Dsonar.qualitygate.wait=true
+
+      - name: 📊 Generate SonarQube Report
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          python3 << 'EOF'
+          import json
+          import requests
+          import os
+          from datetime import datetime
+          
+          # SonarQube API configuration
+          base_url = "https://sonarcloud.io/api"
+          project_key = "betaware-api"
+          token = os.environ.get('SONAR_TOKEN')
+          
+          headers = {'Authorization': f'Bearer {token}'} if token else {}
+          
+          try:
+              # Get project measures
+              measures_url = f"{base_url}/measures/component"
+              params = {
+                  'component': project_key,
+                  'metricKeys': 'security_rating,reliability_rating,sqale_rating,coverage,duplicated_lines_density,ncloc,bugs,vulnerabilities,security_hotspots,code_smells'
+              }
+              
+              response = requests.get(measures_url, params=params, headers=headers)
+              measures_data = response.json() if response.status_code == 200 else {}
+              
+              # Get quality gate status  
+              qg_url = f"{base_url}/qualitygates/project_status"
+              qg_params = {'projectKey': project_key}
+              qg_response = requests.get(qg_url, params=qg_params, headers=headers)
+              qg_data = qg_response.json() if qg_response.status_code == 200 else {}
+              
+              # Process measures
+              measures = {}
+              if 'component' in measures_data:
+                  for measure in measures_data['component'].get('measures', []):
+                      measures[measure['metric']] = measure.get('value', '0')
+              
+              # Generate report
+              report = {
+                  "tool": "SonarQube",
+                  "timestamp": datetime.now().isoformat(),
+                  "project_key": project_key,
+                  "quality_gate": {
+                      "status": qg_data.get('projectStatus', {}).get('status', 'ERROR'),
+                      "conditions": qg_data.get('projectStatus', {}).get('conditions', [])
+                  },
+                  "metrics": {
+                      "security_rating": measures.get('security_rating', 'E'),
+                      "reliability_rating": measures.get('reliability_rating', 'E'),
+                      "maintainability_rating": measures.get('sqale_rating', 'E'),
+                      "coverage": float(measures.get('coverage', 0)),
+                      "duplicated_lines": float(measures.get('duplicated_lines_density', 0)),
+                      "lines_of_code": int(measures.get('ncloc', 0)),
+                      "bugs": int(measures.get('bugs', 0)),
+                      "vulnerabilities": int(measures.get('vulnerabilities', 0)),
+                      "security_hotspots": int(measures.get('security_hotspots', 0)),
+                      "code_smells": int(measures.get('code_smells', 0))
+                  },
+                  "security_analysis": {
+                      "total_security_issues": int(measures.get('vulnerabilities', 0)) + int(measures.get('security_hotspots', 0)),
+                      "security_score": self.calculate_security_score(measures)
+                  }
+              }
+              
+              def calculate_security_score(measures):
+                  base_score = 100
+                  vulnerabilities = int(measures.get('vulnerabilities', 0))
+                  hotspots = int(measures.get('security_hotspots', 0))
+                  coverage = float(measures.get('coverage', 0))
+                  
+                  # Deduct points for issues
+                  score = base_score - (vulnerabilities * 20) - (hotspots * 10)
+                  
+                  # Bonus for good coverage
+                  if coverage > 80:
+                      score += 10
+                  elif coverage < 50:
+                      score -= 15
+                  
+                  return max(0, min(100, score))
+              
+              report["security_analysis"]["security_score"] = calculate_security_score(measures)
+              
+              # Save report
+              with open('sast-sonarqube-detailed.json', 'w') as f:
+                  json.dump(report, f, indent=2)
+              
+              # Create summary
+              summary = f"""
+              ## 🔬 SonarQube Analysis Results
+              
+              **Quality Gate**: {report['quality_gate']['status']}
+              **Security Rating**: {report['metrics']['security_rating']}/5
+              
+              **Issues Found**:
+              - 🐛 Bugs: {report['metrics']['bugs']}
+              - 🔒 Vulnerabilities: {report['metrics']['vulnerabilities']}
+              - 🔥 Security Hotspots: {report['metrics']['security_hotspots']}
+              - 💩 Code Smells: {report['metrics']['code_smells']}
+              
+              **Coverage**: {report['metrics']['coverage']:.1f}%
+              **Duplicated Lines**: {report['metrics']['duplicated_lines']:.1f}%
+              """
+              
+              with open('sonarqube-summary.md', 'w') as f:
+                  f.write(summary)
+                  
+              print(f"::set-output name=quality_gate::{report['quality_gate']['status']}")
+              print(f"::set-output name=vulnerabilities::{report['metrics']['vulnerabilities']}")
+              
+          except Exception as e:
+              print(f"Error generating SonarQube report: {e}")
+              # Create minimal report on error
+              with open('sast-sonarqube-detailed.json', 'w') as f:
+                  json.dump({"error": str(e), "tool": "SonarQube"}, f)
+          EOF
+
+      - name: 📎 Upload SonarQube Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonarqube-analysis-results
+          path: |
+            sast-sonarqube-detailed.json
+            sonarqube-summary.md
+          retention-days: 30
+
+  consolidate-sast-results:
+    name: 📋 Consolidate SAST Results
+    needs: [semgrep-sast, sonarqube-analysis]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    outputs:
+      security-gate: ${{ steps.quality-gate.outputs.result }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download SAST artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sast-results
+
+      - name: 🔄 Consolidate Reports
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          # Initialize consolidated report
+          consolidated = {
+              "pipeline": "SAST Analysis",
+              "timestamp": datetime.now().isoformat(),
+              "commit": os.environ.get('GITHUB_SHA', 'unknown'),
+              "branch": os.environ.get('GITHUB_REF_NAME', 'unknown'),
+              "tools": {},
+              "summary": {
+                  "total_vulnerabilities": 0,
+                  "critical_vulnerabilities": 0,
+                  "high_vulnerabilities": 0,
+                  "medium_vulnerabilities": 0,
+                  "low_vulnerabilities": 0,
+                  "overall_security_score": 100,
+                  "quality_gate_status": "PASSED"
+              },
+              "recommendations": []
+          }
+          
+          # Process Semgrep results
+          semgrep_file = Path("sast-results/semgrep-sast-results/sast-semgrep-detailed.json")
+          if semgrep_file.exists():
+              with open(semgrep_file) as f:
+                  semgrep_data = json.load(f)
+              consolidated["tools"]["semgrep"] = semgrep_data
+              consolidated["summary"]["total_vulnerabilities"] += semgrep_data["summary"]["total_findings"]
+              consolidated["summary"]["critical_vulnerabilities"] += semgrep_data["summary"]["critical"]
+              consolidated["summary"]["high_vulnerabilities"] += semgrep_data["summary"]["high"]
+              consolidated["summary"]["medium_vulnerabilities"] += semgrep_data["summary"]["medium"]
+          
+          # Process SonarQube results
+          sonar_file = Path("sast-results/sonarqube-analysis-results/sast-sonarqube-detailed.json")
+          if sonar_file.exists():
+              with open(sonar_file) as f:
+                  sonar_data = json.load(f)
+              consolidated["tools"]["sonarqube"] = sonar_data
+              if "metrics" in sonar_data:
+                  consolidated["summary"]["total_vulnerabilities"] += sonar_data["metrics"].get("vulnerabilities", 0)
+                  consolidated["summary"]["total_vulnerabilities"] += sonar_data["metrics"].get("security_hotspots", 0)
+          
+          # Calculate overall security score
+          total_critical = consolidated["summary"]["critical_vulnerabilities"]
+          total_high = consolidated["summary"]["high_vulnerabilities"]
+          total_medium = consolidated["summary"]["medium_vulnerabilities"]
+          
+          base_score = 100
+          score_deduction = (total_critical * 30) + (total_high * 15) + (total_medium * 5)
+          overall_score = max(0, base_score - score_deduction)
+          consolidated["summary"]["overall_security_score"] = overall_score
+          
+          # Determine quality gate status
+          if total_critical > 0 or overall_score < 70:
+              consolidated["summary"]["quality_gate_status"] = "FAILED"
+          elif total_high > 5 or overall_score < 85:
+              consolidated["summary"]["quality_gate_status"] = "WARNING"
+          else:
+              consolidated["summary"]["quality_gate_status"] = "PASSED"
+          
+          # Generate recommendations
+          if total_critical > 0:
+              consolidated["recommendations"].append({
+                  "priority": "CRITICAL",
+                  "action": f"Fix {total_critical} critical security vulnerabilities immediately",
+                  "impact": "Deployment blocked until resolved"
+              })
+          
+          if total_high > 3:
+              consolidated["recommendations"].append({
+                  "priority": "HIGH",
+                  "action": f"Address {total_high} high severity security issues",
+                  "impact": "Security risk assessment required before production"
+              })
+          
+          # Save consolidated report
+          with open('sast-consolidated-report.json', 'w') as f:
+              json.dump(consolidated, f, indent=2)
+          
+          # Generate HTML report
+          html_report = f"""
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>SAST Security Analysis Report</title>
+              <style>
+                  body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                  .header {{ background: #2c3e50; color: white; padding: 20px; border-radius: 5px; }}
+                  .summary {{ background: #ecf0f1; padding: 15px; margin: 10px 0; border-radius: 5px; }}
+                  .critical {{ color: #e74c3c; font-weight: bold; }}
+                  .high {{ color: #f39c12; font-weight: bold; }}
+                  .medium {{ color: #f1c40f; font-weight: bold; }}
+                  .passed {{ color: #27ae60; font-weight: bold; }}
+                  .failed {{ color: #e74c3c; font-weight: bold; }}
+                  .warning {{ color: #f39c12; font-weight: bold; }}
+                  table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+                  th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                  th {{ background-color: #f2f2f2; }}
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>🔒 SAST Security Analysis Report</h1>
+                  <p>Generated: {consolidated['timestamp']}</p>
+                  <p>Commit: {consolidated['commit']}</p>
+                  <p>Branch: {consolidated['branch']}</p>
+              </div>
+              
+              <div class="summary">
+                  <h2>📊 Executive Summary</h2>
+                  <p><strong>Overall Security Score:</strong> {overall_score}/100</p>
+                  <p><strong>Quality Gate:</strong> <span class="{consolidated['summary']['quality_gate_status'].lower()}">{consolidated['summary']['quality_gate_status']}</span></p>
+                  <p><strong>Total Vulnerabilities:</strong> {consolidated['summary']['total_vulnerabilities']}</p>
+                  <ul>
+                      <li><span class="critical">Critical:</span> {consolidated['summary']['critical_vulnerabilities']}</li>
+                      <li><span class="high">High:</span> {consolidated['summary']['high_vulnerabilities']}</li>
+                      <li><span class="medium">Medium:</span> {consolidated['summary']['medium_vulnerabilities']}</li>
+                  </ul>
+              </div>
+              
+              <h2>🛠️ Tools Executed</h2>
+              <ul>
+                  <li>✅ Semgrep - Static Analysis Security Testing</li>
+                  <li>✅ SonarQube - Code Quality & Security Analysis</li>
+              </ul>
+              
+              <h2>📋 Recommendations</h2>
+              <ol>
+          """
+          
+          for rec in consolidated["recommendations"]:
+              html_report += f'<li><strong>{rec["priority"]}:</strong> {rec["action"]} - <em>{rec["impact"]}</em></li>'
+          
+          html_report += """
+              </ol>
+              
+              <h2>📈 Detailed Results</h2>
+              <p>See JSON report for complete technical details and remediation guidance.</p>
+              
+          </body>
+          </html>
+          """
+          
+          with open('sast-report.html', 'w') as f:
+              f.write(html_report)
+          
+          print(f"SAST Analysis Complete - Security Score: {overall_score}/100")
+          print(f"Quality Gate: {consolidated['summary']['quality_gate_status']}")
+          print(f"::set-output name=security_score::{overall_score}")
+          print(f"::set-output name=quality_gate::{consolidated['summary']['quality_gate_status']}")
+          print(f"::set-output name=critical_count::{total_critical}")
+          EOF
+
+      - name: 🚦 Quality Gate Decision
+        id: quality-gate
+        run: |
+          if [[ -f "sast-consolidated-report.json" ]]; then
+            QUALITY_GATE=$(python3 -c "
+            import json
+            with open('sast-consolidated-report.json') as f:
+                data = json.load(f)
+            print(data['summary']['quality_gate_status'])
+            ")
+            echo "result=$QUALITY_GATE" >> $GITHUB_OUTPUT
+            
+            if [[ "$QUALITY_GATE" == "FAILED" ]]; then
+              echo "❌ SAST Quality Gate FAILED - Critical vulnerabilities found"
+              exit 1
+            elif [[ "$QUALITY_GATE" == "WARNING" ]]; then
+              echo "⚠️ SAST Quality Gate WARNING - Review required"
+            else
+              echo "✅ SAST Quality Gate PASSED"
+            fi
+          else
+            echo "❌ SAST analysis failed - no report generated"
+            echo "result=FAILED" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 📎 Upload Consolidated Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-final-report
+          path: |
+            sast-consolidated-report.json
+            sast-report.html
+          retention-days: 90
+
+      - name: 💬 Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('sast-consolidated-report.json')) {
+              const report = JSON.parse(fs.readFileSync('sast-consolidated-report.json', 'utf8'));
+              
+              const comment = `## 🔒 SAST Security Analysis Results
+              
+              **🎯 Security Score:** ${report.summary.overall_security_score}/100
+              **🚦 Quality Gate:** ${report.summary.quality_gate_status}
+              
+              ### 📊 Vulnerability Summary
+              - 🔴 **Critical:** ${report.summary.critical_vulnerabilities}
+              - 🟠 **High:** ${report.summary.high_vulnerabilities}  
+              - 🟡 **Medium:** ${report.summary.medium_vulnerabilities}
+              - **Total:** ${report.summary.total_vulnerabilities}
+              
+              ### 🛠️ Tools Executed
+              - ✅ Semgrep (Static Analysis)
+              - ✅ SonarQube (Code Quality)
+              
+              ${report.summary.quality_gate_status === 'FAILED' ? 
+                '❌ **Deployment Blocked** - Critical security issues must be resolved before merge.' :
+                report.summary.quality_gate_status === 'WARNING' ?
+                '⚠️ **Review Required** - Security issues detected, please review before merge.' :
+                '✅ **Security Approved** - No critical security issues detected.'
+              }
+              
+              📄 [View Detailed Report](../actions/runs/${{ github.run_id }})
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }

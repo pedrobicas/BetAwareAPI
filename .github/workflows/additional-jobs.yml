@@ -1,0 +1,217 @@
+  consolidated-report:
+    name: 📋 Generate Consolidated Security Report
+    runs-on: ubuntu-latest
+    needs: [semgrep-sast, dependency-check-sca, sonarqube-analysis]
+    if: always()
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: 📦 Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install jinja2 markdown reportlab weasyprint requests
+        
+    - name: 📥 Download All Analysis Results
+      uses: actions/download-artifact@v3
+      
+    - name: 📊 Generate Comprehensive Security Report
+      run: |
+        python .github/scripts/generate_security_report.py
+        
+    - name: 📈 Generate Security Metrics Dashboard
+      run: |
+        python3 -c "
+        import json
+        import os
+        from datetime import datetime
+        
+        # Consolidate results from all tools
+        results = {
+            'timestamp': datetime.now().isoformat(),
+            'commit': '${{ github.sha }}',
+            'branch': '${{ github.ref_name }}',
+            'semgrep': {'high': 0, 'medium': 0, 'low': 0, 'total': 0},
+            'dependency_check': {'high': 0, 'medium': 0, 'low': 0, 'total': 0},
+            'sonarqube': {'issues': 0, 'security_hotspots': 0}
+        }
+        
+        # Process Semgrep results
+        try:
+            with open('semgrep-analysis-results/semgrep-results.json', 'r') as f:
+                semgrep_data = json.load(f)
+                for result in semgrep_data.get('results', []):
+                    severity = result.get('extra', {}).get('severity', 'INFO')
+                    results['semgrep']['total'] += 1
+                    if severity == 'ERROR':
+                        results['semgrep']['high'] += 1
+                    elif severity == 'WARNING':
+                        results['semgrep']['medium'] += 1
+                    else:
+                        results['semgrep']['low'] += 1
+        except:
+            pass
+        
+        # Process Dependency Check results
+        try:
+            with open('dependency-check-results/dependency-check-report.json', 'r') as f:
+                dep_data = json.load(f)
+                for dep in dep_data.get('dependencies', []):
+                    for vuln in dep.get('vulnerabilities', []):
+                        results['dependency_check']['total'] += 1
+                        severity = vuln.get('severity', '').upper()
+                        if severity in ['HIGH', 'CRITICAL']:
+                            results['dependency_check']['high'] += 1
+                        elif severity == 'MEDIUM':
+                            results['dependency_check']['medium'] += 1
+                        else:
+                            results['dependency_check']['low'] += 1
+        except:
+            pass
+        
+        # Calculate overall security score
+        total_high = results['semgrep']['high'] + results['dependency_check']['high']
+        total_medium = results['semgrep']['medium'] + results['dependency_check']['medium']
+        total_issues = results['semgrep']['total'] + results['dependency_check']['total']
+        
+        security_score = max(0, 100 - (total_high * 20) - (total_medium * 5))
+        results['security_score'] = security_score
+        
+        # Generate summary for PR comment
+        summary = f'''# 🔒 Security Analysis Summary
+        
+**Overall Security Score: {security_score}/100**
+
+| Tool | High | Medium | Low | Total |
+|------|------|--------|-----|-------|
+| 🔍 Semgrep | {results['semgrep']['high']} | {results['semgrep']['medium']} | {results['semgrep']['low']} | {results['semgrep']['total']} |
+| 🛡️ Dependency Check | {results['dependency_check']['high']} | {results['dependency_check']['medium']} | {results['dependency_check']['low']} | {results['dependency_check']['total']} |
+
+**Status:** {'✅ PASS' if total_high == 0 else '❌ FAIL - High severity issues found'}
+
+📋 [View detailed reports in artifacts](../actions/runs/${{ github.run_id }})
+        '''
+        
+        with open('security-summary.md', 'w') as f:
+            f.write(summary)
+            
+        with open('security-metrics.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        "
+        
+    - name: 📤 Upload Consolidated Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: consolidated-security-report
+        path: |
+          security-report.html
+          security-report.md
+          security-summary.md
+          security-metrics.json
+        retention-days: 90
+        
+    - name: 💬 Comment PR with Security Summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          if (fs.existsSync('security-summary.md')) {
+            const summary = fs.readFileSync('security-summary.md', 'utf8');
+            
+            // Find existing security comment
+            const comments = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            
+            const existingComment = comments.data.find(comment => 
+              comment.body.includes('🔒 Security Analysis Summary')
+            );
+            
+            if (existingComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                comment_id: existingComment.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              });
+            }
+          }
+
+  quality-gate:
+    name: 🚪 Security Quality Gate
+    runs-on: ubuntu-latest
+    needs: [semgrep-sast, dependency-check-sca]
+    if: always()
+    
+    steps:
+    - name: 📥 Download Analysis Results
+      uses: actions/download-artifact@v3
+      
+    - name: 🚨 Evaluate Security Quality Gate
+      run: |
+        python3 -c "
+        import json
+        import sys
+        
+        high_severity_count = 0
+        critical_count = 0
+        
+        # Check Semgrep results
+        try:
+            with open('semgrep-analysis-results/semgrep-results.json', 'r') as f:
+                semgrep_data = json.load(f)
+                for result in semgrep_data.get('results', []):
+                    severity = result.get('extra', {}).get('severity', 'INFO')
+                    if severity == 'ERROR':
+                        high_severity_count += 1
+        except:
+            pass
+        
+        # Check Dependency Check results
+        try:
+            with open('dependency-check-results/dependency-check-report.json', 'r') as f:
+                dep_data = json.load(f)
+                for dep in dep_data.get('dependencies', []):
+                    for vuln in dep.get('vulnerabilities', []):
+                        severity = vuln.get('severity', '').upper()
+                        if severity == 'CRITICAL':
+                            critical_count += 1
+                        elif severity == 'HIGH':
+                            high_severity_count += 1
+        except:
+            pass
+        
+        print(f'🔍 Security Quality Gate Analysis:')
+        print(f'Critical vulnerabilities: {critical_count}')
+        print(f'High severity vulnerabilities: {high_severity_count}')
+        
+        if critical_count > 0:
+            print(f'❌ QUALITY GATE FAILED: {critical_count} critical vulnerabilities found')
+            print(f'🚫 Deploy is BLOCKED until critical issues are resolved')
+            sys.exit(1)
+        elif high_severity_count > 0:
+            print(f'⚠️  QUALITY GATE WARNING: {high_severity_count} high severity vulnerabilities found')
+            print(f'🔍 Review required before deployment')
+            # Optionally fail on high severity: sys.exit(1)
+        else:
+            print(f'✅ QUALITY GATE PASSED: No critical or high severity vulnerabilities')
+            print(f'🚀 Ready for deployment')
+        "

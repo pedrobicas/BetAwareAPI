@@ -1,0 +1,901 @@
+name: 🌐 DAST - Dynamic Application Security Testing
+
+on:
+  workflow_run:
+    workflows: ["🔒 SAST - Static Application Security Testing"]
+    types:
+      - completed
+  push:
+    branches: [ master ]
+  schedule:
+    - cron: '0 4 * * *'  # Daily at 4 AM (after SAST)
+
+env:
+  JAVA_VERSION: '17'
+  APP_PORT: '8080'
+  ZAP_PORT: '8090'
+
+jobs:
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    outputs:
+      app-url: ${{ steps.deploy.outputs.url }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 📦 Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+
+      - name: 🔨 Build Application
+        run: |
+          mvn clean package -DskipTests
+          echo "Build completed successfully"
+
+      - name: 🚀 Start Application
+        id: deploy
+        run: |
+          # Start application in background
+          java -jar target/*.jar \
+            --server.port=${{ env.APP_PORT }} \
+            --spring.profiles.active=test \
+            --spring.h2.console.enabled=true \
+            --spring.datasource.url=jdbc:h2:mem:testdb \
+            --logging.level.com.example.betaware=DEBUG &
+          
+          APP_PID=$!
+          echo "app_pid=$APP_PID" >> $GITHUB_OUTPUT
+          
+          # Wait for application to start
+          echo "Waiting for application to start..."
+          for i in {1..60}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}/actuator/health &>/dev/null; then
+              echo "Application started successfully"
+              echo "url=http://localhost:${{ env.APP_PORT }}" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Attempt $i: Application not ready yet..."
+            sleep 5
+          done
+          
+          # Verify application is running
+          if ! curl -f http://localhost:${{ env.APP_PORT }}/actuator/health; then
+            echo "Failed to start application"
+            kill $APP_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          echo "Application health check passed"
+
+      - name: 🔍 Application Health Check
+        run: |
+          echo "Testing application endpoints..."
+          
+          # Test health endpoint
+          curl -v http://localhost:${{ env.APP_PORT }}/actuator/health
+          
+          # Test API endpoints
+          echo "Testing API endpoints..."
+          curl -v http://localhost:${{ env.APP_PORT }}/api/health || true
+          
+          # Test authentication endpoint
+          curl -v -X POST http://localhost:${{ env.APP_PORT }}/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"test","password":"wrong"}' || true
+
+  zap-baseline-scan:
+    name: 🕷️ OWASP ZAP Baseline Scan
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 🚀 Start Application for DAST
+        run: |
+          mvn clean package -DskipTests
+          java -jar target/*.jar \
+            --server.port=${{ env.APP_PORT }} \
+            --spring.profiles.active=test \
+            --spring.h2.console.enabled=true \
+            --spring.datasource.url=jdbc:h2:mem:testdb &
+          
+          # Wait for application to start
+          for i in {1..60}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}/actuator/health &>/dev/null; then
+              echo "Application ready for DAST testing"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: 🕷️ Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:${{ env.APP_PORT }}'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j -l FAIL -r zap-baseline-report.html -J zap-baseline-report.json'
+        continue-on-error: true
+
+      - name: 📊 Process ZAP Baseline Results
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          import xml.etree.ElementTree as ET
+          
+          # Initialize report structure
+          report = {
+              "tool": "OWASP ZAP Baseline",
+              "scan_type": "baseline",
+              "timestamp": datetime.now().isoformat(),
+              "target_url": "http://localhost:${{ env.APP_PORT }}",
+              "summary": {
+                  "total_alerts": 0,
+                  "high_risk": 0,
+                  "medium_risk": 0,
+                  "low_risk": 0,
+                  "informational": 0,
+                  "confidence_score": 0
+              },
+              "alerts": [],
+              "recommendations": []
+          }
+          
+          # Process JSON report if available
+          if os.path.exists('zap-baseline-report.json'):
+              try:
+                  with open('zap-baseline-report.json', 'r') as f:
+                      zap_data = json.load(f)
+                  
+                  # Extract site information
+                  if 'site' in zap_data:
+                      for site in zap_data['site']:
+                          if 'alerts' in site:
+                              for alert in site['alerts']:
+                                  risk_level = alert.get('riskdesc', 'Informational').split()[0].lower()
+                                  confidence = alert.get('confidence', 'Medium')
+                                  
+                                  alert_info = {
+                                      "name": alert.get('name', 'Unknown'),
+                                      "risk": risk_level.title(),
+                                      "confidence": confidence,
+                                      "description": alert.get('desc', ''),
+                                      "solution": alert.get('solution', ''),
+                                      "reference": alert.get('reference', ''),
+                                      "cweid": alert.get('cweid', ''),
+                                      "wascid": alert.get('wascid', ''),
+                                      "instances": []
+                                  }
+                                  
+                                  # Extract instances
+                                  if 'instances' in alert:
+                                      for instance in alert['instances']:
+                                          alert_info['instances'].append({
+                                              "uri": instance.get('uri', ''),
+                                              "method": instance.get('method', ''),
+                                              "param": instance.get('param', ''),
+                                              "evidence": instance.get('evidence', '')
+                                          })
+                                  
+                                  report['alerts'].append(alert_info)
+                                  report['summary']['total_alerts'] += 1
+                                  
+                                  # Count by risk level
+                                  if risk_level == 'high':
+                                      report['summary']['high_risk'] += 1
+                                  elif risk_level == 'medium':
+                                      report['summary']['medium_risk'] += 1
+                                  elif risk_level == 'low':
+                                      report['summary']['low_risk'] += 1
+                                  else:
+                                      report['summary']['informational'] += 1
+              
+              except Exception as e:
+                  print(f"Error processing ZAP JSON report: {e}")
+          
+          # Calculate confidence score
+          total_issues = report['summary']['high_risk'] + report['summary']['medium_risk'] + report['summary']['low_risk']
+          if total_issues == 0:
+              report['summary']['confidence_score'] = 95
+          else:
+              # Deduct points based on severity
+              deduction = (report['summary']['high_risk'] * 25) + (report['summary']['medium_risk'] * 15) + (report['summary']['low_risk'] * 5)
+              report['summary']['confidence_score'] = max(0, 100 - deduction)
+          
+          # Generate recommendations
+          if report['summary']['high_risk'] > 0:
+              report['recommendations'].append({
+                  "priority": "CRITICAL",
+                  "action": f"Immediately address {report['summary']['high_risk']} high-risk vulnerabilities",
+                  "impact": "Critical security risks detected"
+              })
+          
+          if report['summary']['medium_risk'] > 0:
+              report['recommendations'].append({
+                  "priority": "HIGH",
+                  "action": f"Review and fix {report['summary']['medium_risk']} medium-risk issues",
+                  "impact": "Moderate security risks that should be addressed"
+              })
+          
+          # Save detailed report
+          with open('dast-zap-baseline-detailed.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          # Create summary
+          summary = f"""
+          ## 🕷️ OWASP ZAP Baseline Scan Results
+          
+          **Target**: {report['target_url']}
+          **Confidence Score**: {report['summary']['confidence_score']}/100
+          
+          **Security Issues Found**: {report['summary']['total_alerts']}
+          - 🔴 High Risk: {report['summary']['high_risk']}
+          - 🟠 Medium Risk: {report['summary']['medium_risk']}
+          - 🟡 Low Risk: {report['summary']['low_risk']}
+          - ℹ️ Informational: {report['summary']['informational']}
+          
+          **Quality Gate**: {'❌ FAILED' if report['summary']['high_risk'] > 0 else '⚠️ WARNING' if report['summary']['medium_risk'] > 3 else '✅ PASSED'}
+          """
+          
+          with open('zap-baseline-summary.md', 'w') as f:
+              f.write(summary)
+          
+          print(f"ZAP Baseline Scan completed - {report['summary']['total_alerts']} alerts found")
+          print(f"::set-output name=total_alerts::{report['summary']['total_alerts']}")
+          print(f"::set-output name=high_risk::{report['summary']['high_risk']}")
+          print(f"::set-output name=confidence_score::{report['summary']['confidence_score']}")
+          EOF
+
+      - name: 📎 Upload ZAP Baseline Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-baseline-results
+          path: |
+            zap-baseline-report.html
+            zap-baseline-report.json
+            dast-zap-baseline-detailed.json
+            zap-baseline-summary.md
+          retention-days: 30
+
+  zap-full-scan:
+    name: 🎯 OWASP ZAP Full Scan
+    needs: [deploy-staging, zap-baseline-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 🚀 Start Application for Full DAST
+        run: |
+          mvn clean package -DskipTests
+          java -jar target/*.jar \
+            --server.port=${{ env.APP_PORT }} \
+            --spring.profiles.active=test \
+            --spring.h2.console.enabled=true \
+            --spring.datasource.url=jdbc:h2:mem:testdb &
+          
+          # Wait for application to start
+          for i in {1..60}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}/actuator/health &>/dev/null; then
+              echo "Application ready for full DAST testing"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: 🎯 Run OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: 'http://localhost:${{ env.APP_PORT }}'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j -l FAIL -r zap-full-report.html -J zap-full-report.json'
+        continue-on-error: true
+
+      - name: 📊 Process ZAP Full Results
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          
+          # Initialize comprehensive report
+          report = {
+              "tool": "OWASP ZAP Full Scan",
+              "scan_type": "full",
+              "timestamp": datetime.now().isoformat(),
+              "target_url": "http://localhost:${{ env.APP_PORT }}",
+              "scan_duration": "N/A",
+              "summary": {
+                  "total_alerts": 0,
+                  "high_risk": 0,
+                  "medium_risk": 0,
+                  "low_risk": 0,
+                  "informational": 0,
+                  "security_score": 100,
+                  "urls_tested": 0,
+                  "payloads_used": []
+              },
+              "vulnerabilities": [],
+              "attack_scenarios": [],
+              "remediation_plan": []
+          }
+          
+          # Process full scan results
+          if os.path.exists('zap-full-report.json'):
+              try:
+                  with open('zap-full-report.json', 'r') as f:
+                      zap_data = json.load(f)
+                  
+                  # Extract comprehensive information
+                  if 'site' in zap_data:
+                      for site in zap_data['site']:
+                          # Count URLs tested
+                          if '@name' in site:
+                              report['summary']['urls_tested'] = len(site.get('alerts', []))
+                          
+                          if 'alerts' in site:
+                              for alert in site['alerts']:
+                                  risk_level = alert.get('riskdesc', 'Informational').split()[0].lower()
+                                  
+                                  vulnerability = {
+                                      "id": alert.get('pluginid', ''),
+                                      "name": alert.get('name', 'Unknown'),
+                                      "risk": risk_level.title(),
+                                      "confidence": alert.get('confidence', 'Medium'),
+                                      "description": alert.get('desc', ''),
+                                      "solution": alert.get('solution', ''),
+                                      "reference": alert.get('reference', ''),
+                                      "cwe_id": alert.get('cweid', ''),
+                                      "wasc_id": alert.get('wascid', ''),
+                                      "attack_vectors": [],
+                                      "evidence": []
+                                  }
+                                  
+                                  # Extract attack evidence
+                                  if 'instances' in alert:
+                                      for instance in alert['instances']:
+                                          evidence = {
+                                              "url": instance.get('uri', ''),
+                                              "method": instance.get('method', 'GET'),
+                                              "parameter": instance.get('param', ''),
+                                              "attack_payload": instance.get('attack', ''),
+                                              "evidence": instance.get('evidence', ''),
+                                              "other_info": instance.get('otherinfo', '')
+                                          }
+                                          vulnerability['evidence'].append(evidence)
+                                          
+                                          # Track unique payloads
+                                          if instance.get('attack') and instance.get('attack') not in report['summary']['payloads_used']:
+                                              report['summary']['payloads_used'].append(instance.get('attack'))
+                                  
+                                  report['vulnerabilities'].append(vulnerability)
+                                  report['summary']['total_alerts'] += 1
+                                  
+                                  # Count by risk level
+                                  if risk_level == 'high':
+                                      report['summary']['high_risk'] += 1
+                                  elif risk_level == 'medium':
+                                      report['summary']['medium_risk'] += 1
+                                  elif risk_level == 'low':
+                                      report['summary']['low_risk'] += 1
+                                  else:
+                                      report['summary']['informational'] += 1
+              
+              except Exception as e:
+                  print(f"Error processing ZAP full scan report: {e}")
+          
+          # Calculate security score
+          base_score = 100
+          high_deduction = report['summary']['high_risk'] * 30
+          medium_deduction = report['summary']['medium_risk'] * 15
+          low_deduction = report['summary']['low_risk'] * 5
+          
+          report['summary']['security_score'] = max(0, base_score - high_deduction - medium_deduction - low_deduction)
+          
+          # Generate attack scenarios for high-risk issues
+          for vuln in report['vulnerabilities']:
+              if vuln['risk'] == 'High' and vuln['evidence']:
+                  scenario = {
+                      "vulnerability": vuln['name'],
+                      "attack_method": "Manual exploitation demonstrated",
+                      "payload_example": vuln['evidence'][0].get('attack_payload', 'N/A') if vuln['evidence'] else 'N/A',
+                      "potential_impact": f"Critical security risk: {vuln['description'][:100]}...",
+                      "exploitation_steps": [
+                          f"1. Access URL: {vuln['evidence'][0].get('url', 'N/A') if vuln['evidence'] else 'N/A'}",
+                          f"2. Use method: {vuln['evidence'][0].get('method', 'GET') if vuln['evidence'] else 'GET'}",
+                          f"3. Inject payload: {vuln['evidence'][0].get('attack_payload', 'N/A') if vuln['evidence'] else 'N/A'}",
+                          "4. Observe vulnerable behavior"
+                      ]
+                  }
+                  report['attack_scenarios'].append(scenario)
+          
+          # Generate remediation plan
+          if report['summary']['high_risk'] > 0:
+              report['remediation_plan'].append({
+                  "priority": 1,
+                  "timeframe": "Immediate (24 hours)",
+                  "action": f"Fix {report['summary']['high_risk']} critical vulnerabilities",
+                  "resources_needed": "Security team + Development team"
+              })
+          
+          if report['summary']['medium_risk'] > 0:
+              report['remediation_plan'].append({
+                  "priority": 2,
+                  "timeframe": "Short term (1 week)",
+                  "action": f"Address {report['summary']['medium_risk']} medium-risk issues",
+                  "resources_needed": "Development team"
+              })
+          
+          # Save comprehensive report
+          with open('dast-zap-full-detailed.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          # Create detailed summary
+          summary = f"""
+          ## 🎯 OWASP ZAP Full Scan Results
+          
+          **Target**: {report['target_url']}
+          **Security Score**: {report['summary']['security_score']}/100
+          **URLs Tested**: {report['summary']['urls_tested']}
+          **Payloads Used**: {len(report['summary']['payloads_used'])}
+          
+          **Vulnerabilities Found**: {report['summary']['total_alerts']}
+          - 🔴 High Risk: {report['summary']['high_risk']}
+          - 🟠 Medium Risk: {report['summary']['medium_risk']}
+          - 🟡 Low Risk: {report['summary']['low_risk']}
+          - ℹ️ Informational: {report['summary']['informational']}
+          
+          **Attack Scenarios**: {len(report['attack_scenarios'])} critical scenarios identified
+          **Quality Gate**: {'❌ FAILED' if report['summary']['high_risk'] > 0 else '⚠️ WARNING' if report['summary']['medium_risk'] > 2 else '✅ PASSED'}
+          """
+          
+          with open('zap-full-summary.md', 'w') as f:
+              f.write(summary)
+          
+          print(f"ZAP Full Scan completed - Security Score: {report['summary']['security_score']}/100")
+          print(f"::set-output name=security_score::{report['summary']['security_score']}")
+          print(f"::set-output name=high_risk::{report['summary']['high_risk']}")
+          print(f"::set-output name=attack_scenarios::{len(report['attack_scenarios'])}")
+          EOF
+
+      - name: 📎 Upload ZAP Full Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-full-scan-results
+          path: |
+            zap-full-report.html
+            zap-full-report.json
+            dast-zap-full-detailed.json
+            zap-full-summary.md
+          retention-days: 30
+
+  consolidate-dast-results:
+    name: 📋 Consolidate DAST Results
+    needs: [zap-baseline-scan, zap-full-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    outputs:
+      dast-gate: ${{ steps.quality-gate.outputs.result }}
+      
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download DAST artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dast-results
+
+      - name: 🔄 Consolidate DAST Reports
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          # Initialize consolidated DAST report
+          consolidated = {
+              "pipeline": "DAST Analysis",
+              "timestamp": datetime.now().isoformat(),
+              "commit": os.environ.get('GITHUB_SHA', 'unknown'),
+              "branch": os.environ.get('GITHUB_REF_NAME', 'unknown'),
+              "target_application": "BetAware API",
+              "scans_performed": [],
+              "summary": {
+                  "total_vulnerabilities": 0,
+                  "high_risk": 0,
+                  "medium_risk": 0,
+                  "low_risk": 0,
+                  "informational": 0,
+                  "overall_security_score": 100,
+                  "quality_gate_status": "PASSED",
+                  "urls_tested": 0,
+                  "attack_scenarios": 0
+              },
+              "critical_findings": [],
+              "attack_evidence": [],
+              "remediation_roadmap": []
+          }
+          
+          # Process baseline scan results
+          baseline_file = Path("dast-results/zap-baseline-results/dast-zap-baseline-detailed.json")
+          if baseline_file.exists():
+              with open(baseline_file) as f:
+                  baseline_data = json.load(f)
+              
+              consolidated["scans_performed"].append({
+                  "type": "Baseline Scan",
+                  "status": "completed",
+                  "findings": baseline_data["summary"]["total_alerts"]
+              })
+              
+              consolidated["summary"]["total_vulnerabilities"] += baseline_data["summary"]["total_alerts"]
+              consolidated["summary"]["high_risk"] += baseline_data["summary"]["high_risk"]
+              consolidated["summary"]["medium_risk"] += baseline_data["summary"]["medium_risk"]
+              consolidated["summary"]["low_risk"] += baseline_data["summary"]["low_risk"]
+              consolidated["summary"]["informational"] += baseline_data["summary"]["informational"]
+          
+          # Process full scan results  
+          full_file = Path("dast-results/zap-full-scan-results/dast-zap-full-detailed.json")
+          if full_file.exists():
+              with open(full_file) as f:
+                  full_data = json.load(f)
+              
+              consolidated["scans_performed"].append({
+                  "type": "Full Scan",
+                  "status": "completed", 
+                  "findings": full_data["summary"]["total_alerts"]
+              })
+              
+              consolidated["summary"]["urls_tested"] = full_data["summary"]["urls_tested"]
+              consolidated["summary"]["attack_scenarios"] = len(full_data.get("attack_scenarios", []))
+              
+              # Add critical findings from full scan
+              for vuln in full_data.get("vulnerabilities", []):
+                  if vuln["risk"] == "High":
+                      consolidated["critical_findings"].append({
+                          "name": vuln["name"],
+                          "risk": vuln["risk"],
+                          "cwe": vuln.get("cwe_id", ""),
+                          "evidence_count": len(vuln.get("evidence", [])),
+                          "solution": vuln.get("solution", "")
+                      })
+              
+              # Add attack evidence
+              for scenario in full_data.get("attack_scenarios", []):
+                  consolidated["attack_evidence"].append({
+                      "vulnerability": scenario["vulnerability"],
+                      "payload": scenario["payload_example"],
+                      "impact": scenario["potential_impact"]
+                  })
+          
+          # Calculate overall security score
+          total_high = consolidated["summary"]["high_risk"]
+          total_medium = consolidated["summary"]["medium_risk"]
+          total_low = consolidated["summary"]["low_risk"]
+          
+          base_score = 100
+          score_deduction = (total_high * 25) + (total_medium * 10) + (total_low * 2)
+          overall_score = max(0, base_score - score_deduction)
+          consolidated["summary"]["overall_security_score"] = overall_score
+          
+          # Determine quality gate status
+          if total_high > 0:
+              consolidated["summary"]["quality_gate_status"] = "FAILED"
+          elif total_medium > 3 or overall_score < 80:
+              consolidated["summary"]["quality_gate_status"] = "WARNING"  
+          else:
+              consolidated["summary"]["quality_gate_status"] = "PASSED"
+          
+          # Generate remediation roadmap
+          if total_high > 0:
+              consolidated["remediation_roadmap"].append({
+                  "phase": "Emergency Response",
+                  "timeframe": "0-24 hours",
+                  "actions": [
+                      f"Immediately patch {total_high} high-risk vulnerabilities",
+                      "Deploy security fixes to production",
+                      "Conduct security incident review"
+                  ],
+                  "priority": "CRITICAL"
+              })
+          
+          if total_medium > 0:
+              consolidated["remediation_roadmap"].append({
+                  "phase": "Short-term Security Improvements", 
+                  "timeframe": "1-7 days",
+                  "actions": [
+                      f"Address {total_medium} medium-risk security issues",
+                      "Implement additional security controls",
+                      "Update security documentation"
+                  ],
+                  "priority": "HIGH"
+              })
+          
+          consolidated["remediation_roadmap"].append({
+              "phase": "Long-term Security Enhancement",
+              "timeframe": "1-4 weeks", 
+              "actions": [
+                  "Implement automated security testing",
+                  "Conduct security training for development team",
+                  "Establish security review process"
+              ],
+              "priority": "MEDIUM"
+          })
+          
+          # Save consolidated report
+          with open('dast-consolidated-report.json', 'w') as f:
+              json.dump(consolidated, f, indent=2)
+          
+          # Generate comprehensive HTML report
+          html_report = f"""
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>DAST Security Analysis Report</title>
+              <style>
+                  body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+                  .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }}
+                  .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; margin-bottom: 20px; }}
+                  .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
+                  .metric {{ background: #ecf0f1; padding: 20px; border-radius: 8px; text-align: center; }}
+                  .metric h3 {{ margin: 0; font-size: 2em; }}
+                  .critical {{ color: #e74c3c; }}
+                  .high {{ color: #f39c12; }}
+                  .medium {{ color: #f1c40f; }}
+                  .passed {{ color: #27ae60; }}
+                  .failed {{ color: #e74c3c; }}
+                  .warning {{ color: #f39c12; }}
+                  .findings {{ margin: 20px 0; }}
+                  .finding {{ background: #fff; border-left: 4px solid #3498db; padding: 15px; margin: 10px 0; border-radius: 0 5px 5px 0; }}
+                  .evidence {{ background: #2c3e50; color: #ecf0f1; padding: 10px; border-radius: 5px; font-family: monospace; margin: 10px 0; }}
+                  table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                  th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+                  th {{ background-color: #34495e; color: white; }}
+                  .roadmap {{ background: #e8f6f3; padding: 20px; border-radius: 10px; margin: 20px 0; }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>🌐 DAST Security Analysis Report</h1>
+                      <p><strong>Application:</strong> BetAware API</p>
+                      <p><strong>Generated:</strong> {consolidated['timestamp']}</p>
+                      <p><strong>Commit:</strong> {consolidated['commit']}</p>
+                      <p><strong>Branch:</strong> {consolidated['branch']}</p>
+                  </div>
+                  
+                  <div class="summary">
+                      <div class="metric">
+                          <h3>{overall_score}</h3>
+                          <p>Security Score</p>
+                      </div>
+                      <div class="metric">
+                          <h3 class="{'failed' if consolidated['summary']['quality_gate_status'] == 'FAILED' else 'warning' if consolidated['summary']['quality_gate_status'] == 'WARNING' else 'passed'}">{consolidated['summary']['quality_gate_status']}</h3>
+                          <p>Quality Gate</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['total_vulnerabilities']}</h3>
+                          <p>Total Vulnerabilities</p>
+                      </div>
+                      <div class="metric">
+                          <h3>{consolidated['summary']['urls_tested']}</h3>
+                          <p>URLs Tested</p>
+                      </div>
+                  </div>
+                  
+                  <h2>📊 Vulnerability Breakdown</h2>
+                  <table>
+                      <tr>
+                          <th>Risk Level</th>
+                          <th>Count</th>
+                          <th>Impact</th>
+                      </tr>
+                      <tr>
+                          <td><span class="critical">🔴 High Risk</span></td>
+                          <td>{consolidated['summary']['high_risk']}</td>
+                          <td>Critical security vulnerabilities requiring immediate attention</td>
+                      </tr>
+                      <tr>
+                          <td><span class="high">🟠 Medium Risk</span></td>
+                          <td>{consolidated['summary']['medium_risk']}</td>
+                          <td>Moderate security issues that should be addressed</td>
+                      </tr>
+                      <tr>
+                          <td><span class="medium">🟡 Low Risk</span></td>
+                          <td>{consolidated['summary']['low_risk']}</td>
+                          <td>Minor security concerns for future consideration</td>
+                      </tr>
+                  </table>
+                  
+                  <h2>🕷️ Scans Performed</h2>
+                  <ul>
+          """
+          
+          for scan in consolidated["scans_performed"]:
+              html_report += f'<li><strong>{scan["type"]}</strong>: {scan["status"]} - {scan["findings"]} findings</li>'
+          
+          html_report += """
+                  </ul>
+                  
+                  <h2>🎯 Critical Findings</h2>
+                  <div class="findings">
+          """
+          
+          for finding in consolidated["critical_findings"]:
+              html_report += f"""
+                  <div class="finding">
+                      <h4 class="critical">{finding['name']}</h4>
+                      <p><strong>Risk:</strong> {finding['risk']}</p>
+                      <p><strong>CWE:</strong> {finding['cwe']}</p>
+                      <p><strong>Evidence Count:</strong> {finding['evidence_count']}</p>
+                      <p><strong>Solution:</strong> {finding['solution'][:200]}...</p>
+                  </div>
+              """
+          
+          html_report += """
+                  </div>
+                  
+                  <h2>💥 Attack Evidence</h2>
+          """
+          
+          for evidence in consolidated["attack_evidence"]:
+              html_report += f"""
+                  <div class="evidence">
+                      <strong>Vulnerability:</strong> {evidence['vulnerability']}<br>
+                      <strong>Payload:</strong> {evidence['payload']}<br>
+                      <strong>Impact:</strong> {evidence['impact']}
+                  </div>
+              """
+          
+          html_report += f"""
+                  <div class="roadmap">
+                      <h2>🛠️ Remediation Roadmap</h2>
+          """
+          
+          for phase in consolidated["remediation_roadmap"]:
+              html_report += f"""
+                      <h3>{phase['phase']} ({phase['timeframe']})</h3>
+                      <p><strong>Priority:</strong> {phase['priority']}</p>
+                      <ul>
+              """
+              for action in phase['actions']:
+                  html_report += f'<li>{action}</li>'
+              html_report += '</ul>'
+          
+          html_report += """
+                  </div>
+                  
+                  <h2>📈 Next Steps</h2>
+                  <ol>
+                      <li>Review and prioritize critical findings</li>
+                      <li>Implement security fixes based on remediation roadmap</li>
+                      <li>Re-run DAST scans to validate fixes</li>
+                      <li>Update security documentation and procedures</li>
+                  </ol>
+                  
+              </div>
+          </body>
+          </html>
+          """
+          
+          with open('dast-report.html', 'w') as f:
+              f.write(html_report)
+          
+          print(f"DAST Analysis Complete - Security Score: {overall_score}/100")
+          print(f"Quality Gate: {consolidated['summary']['quality_gate_status']}")
+          print(f"::set-output name=security_score::{overall_score}")
+          print(f"::set-output name=quality_gate::{consolidated['summary']['quality_gate_status']}")
+          print(f"::set-output name=high_risk::{total_high}")
+          EOF
+
+      - name: 🚦 DAST Quality Gate Decision
+        id: quality-gate
+        run: |
+          if [[ -f "dast-consolidated-report.json" ]]; then
+            QUALITY_GATE=$(python3 -c "
+            import json
+            with open('dast-consolidated-report.json') as f:
+                data = json.load(f)
+            print(data['summary']['quality_gate_status'])
+            ")
+            echo "result=$QUALITY_GATE" >> $GITHUB_OUTPUT
+            
+            if [[ "$QUALITY_GATE" == "FAILED" ]]; then
+              echo "❌ DAST Quality Gate FAILED - High-risk vulnerabilities found"
+              exit 1
+            elif [[ "$QUALITY_GATE" == "WARNING" ]]; then
+              echo "⚠️ DAST Quality Gate WARNING - Review required before production"
+            else
+              echo "✅ DAST Quality Gate PASSED"
+            fi
+          else
+            echo "❌ DAST analysis failed - no report generated"
+            echo "result=FAILED" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 📎 Upload Consolidated DAST Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-final-report
+          path: |
+            dast-consolidated-report.json
+            dast-report.html
+          retention-days: 90
+
+      - name: 💬 Comment PR with DAST Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('dast-consolidated-report.json')) {
+              const report = JSON.parse(fs.readFileSync('dast-consolidated-report.json', 'utf8'));
+              
+              const comment = `## 🌐 DAST Security Analysis Results
+              
+              **🎯 Security Score:** ${report.summary.overall_security_score}/100
+              **🚦 Quality Gate:** ${report.summary.quality_gate_status}
+              
+              ### 🕷️ Dynamic Testing Summary
+              - **URLs Tested:** ${report.summary.urls_tested}
+              - **Attack Scenarios:** ${report.summary.attack_scenarios}
+              
+              ### 📊 Vulnerability Summary
+              - 🔴 **High Risk:** ${report.summary.high_risk}
+              - 🟠 **Medium Risk:** ${report.summary.medium_risk}  
+              - 🟡 **Low Risk:** ${report.summary.low_risk}
+              - **Total:** ${report.summary.total_vulnerabilities}
+              
+              ### 🛠️ Scans Performed
+              ${report.scans_performed.map(scan => `- ✅ ${scan.type}: ${scan.findings} findings`).join('\n')}
+              
+              ${report.summary.quality_gate_status === 'FAILED' ? 
+                '❌ **Deployment Blocked** - High-risk vulnerabilities detected during dynamic testing.' :
+                report.summary.quality_gate_status === 'WARNING' ?
+                '⚠️ **Security Review Required** - Medium-risk issues found, review before production deployment.' :
+                '✅ **Security Approved** - No high-risk vulnerabilities detected in dynamic testing.'
+              }
+              
+              📄 [View Detailed DAST Report](../actions/runs/${{ github.run_id }})
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }

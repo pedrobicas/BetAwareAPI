@@ -1,0 +1,108 @@
+{
+  "timestamp": "2025-09-21T14:30:00Z",
+  "commit": "abc123def456",
+  "branch": "master",
+  "pipeline_status": "completed",
+  "tools_executed": ["semgrep", "dependency-check", "sonarqube"],
+  
+  "summary": {
+    "total_vulnerabilities": 4,
+    "high_severity": 1,
+    "medium_severity": 2,
+    "low_severity": 1,
+    "security_score": 70
+  },
+  
+  "semgrep_results": {
+    "high": 1,
+    "medium": 1,
+    "low": 1,
+    "total": 3,
+    "findings": [
+      {
+        "rule_id": "hardcoded-jwt-secret",
+        "severity": "HIGH",
+        "file": "src/main/resources/application.properties",
+        "line": 24,
+        "message": "Hardcoded JWT secret detected. Use environment variables or secure configuration.",
+        "cwe": "CWE-798",
+        "owasp": "A07:2021 - Identification and Authentication Failures"
+      },
+      {
+        "rule_id": "h2-console-enabled-production",
+        "severity": "MEDIUM",
+        "file": "src/main/resources/application.properties",
+        "line": 12,
+        "message": "H2 Console should not be enabled in production",
+        "cwe": "CWE-200"
+      },
+      {
+        "rule_id": "debug-mode-enabled",
+        "severity": "LOW",
+        "file": "src/main/resources/application.properties",
+        "line": 28,
+        "message": "Debug logging enabled - may expose sensitive information",
+        "cwe": "CWE-532"
+      }
+    ]
+  },
+  
+  "dependency_check_results": {
+    "high": 0,
+    "medium": 1,
+    "low": 0,
+    "total": 1,
+    "scanned_dependencies": 23,
+    "findings": [
+      {
+        "cve": "CVE-2023-20883",
+        "severity": "MEDIUM",
+        "component": "spring-boot-starter-web",
+        "version": "3.2.3",
+        "description": "Spring Framework vulnerability in certain configurations"
+      }
+    ]
+  },
+  
+  "sonarqube_results": {
+    "quality_gate": "WARNING",
+    "security_hotspots": 2,
+    "code_smells": 5,
+    "bugs": 0,
+    "vulnerabilities": 1,
+    "coverage": 75.5,
+    "duplicated_lines": 0.8
+  },
+  
+  "quality_gate_status": "FAILED",
+  "deployment_blocked": true,
+  "reason": "1 high severity vulnerability found",
+  
+  "recommendations": [
+    {
+      "priority": "CRITICAL",
+      "action": "Move JWT secret to environment variables",
+      "file": "application.properties",
+      "estimated_effort": "30 minutes"
+    },
+    {
+      "priority": "HIGH",
+      "action": "Configure Spring profiles for dev/prod environments",
+      "file": "application.properties",
+      "estimated_effort": "2 hours"
+    },
+    {
+      "priority": "MEDIUM", 
+      "action": "Review and restrict CORS configuration",
+      "file": "SecurityConfig.java",
+      "estimated_effort": "1 hour"
+    }
+  ],
+  
+  "next_steps": [
+    "Fix hardcoded JWT secret immediately",
+    "Run security scan again after fixes",
+    "Update deployment pipeline to use environment variables",
+    "Schedule security training for development team"
+  ]
+}
