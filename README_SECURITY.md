@@ -242,21 +242,3 @@ mvn spring-boot:run -Dspring.profiles.active=prod
 ## 📄 Licença
 
 Este projeto está licenciado sob a MIT License - veja o arquivo [LICENSE](LICENSE) para detalhes.
-
-## 🆘 Suporte
-
-### Contatos
-- **Equipe de Desenvolvimento**: dev-team@betaware.com
-- **Equipe de Segurança**: security-team@betaware.com
-- **Issues**: [GitHub Issues](https://github.com/pedrobicas/BetAwareAPI/issues)
-
-### Links Úteis
-- **CI/CD Pipeline**: [GitHub Actions](https://github.com/pedrobicas/BetAwareAPI/actions)
-- **Quality Analysis**: [SonarCloud](https://sonarcloud.io/project/betaware-api)
-- **Security Monitoring**: [Snyk Dashboard](https://snyk.io/org/betaware)
-- **API Documentation**: [Swagger UI](http://localhost:8080/swagger-ui.html)
-
----
-
-**🔒 Security First Development**  
-*Este projeto segue as melhores práticas de segurança e implementa um pipeline completo de DevSecOps*
