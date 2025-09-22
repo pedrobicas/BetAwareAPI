@@ -1,10 +1,24 @@
-####################################################################################################################
-# WARNING: Do not store sensitive information in this file, as its contents will be included in the Qodana report. #
-####################################################################################################################
+name: Security Pipeline CI
 
-version: "1.0"
-linter: jetbrains/qodana-jvm:2025.2
-profile:
-  name: qodana.recommended
-include:
-  - name: CheckDependencyLicenses
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  qodana-sast-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: 'JetBrains Qodana Scan'
+        uses: JetBrains/qodana-action@v2023.2
+        with:
+          # Esta linha cria um arquivo .zip com o relatório HTML dentro
+          artifact-name: qodana-report-html
+
+          # Opcional: Para garantir que o relatório seja gerado mesmo que encontre erros
+          # Você pode remover essa linha depois para que o pipeline falhe em caso de erros
+          continue-on-error: true
