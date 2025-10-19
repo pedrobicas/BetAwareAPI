@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class AuthService {
+public class AuthService implements IAuthService {
 
     @Autowired
     private AuthenticationManager authenticationManager;
@@ -86,4 +86,4 @@ public class AuthService {
             throw new RuntimeException("Erro ao registrar usuário: " + e.getMessage(), e);
         }
     }
-} 
+}

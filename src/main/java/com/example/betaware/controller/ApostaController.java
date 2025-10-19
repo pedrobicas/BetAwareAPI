@@ -1,7 +1,7 @@
 package com.example.betaware.controller;
 
 import com.example.betaware.dto.ApostaDTO;
-import com.example.betaware.service.ApostaService;
+import com.example.betaware.service.IApostaService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -21,7 +21,7 @@ import java.util.List;
 public class ApostaController {
 
     @Autowired
-    private ApostaService apostaService;
+    private IApostaService apostaService;
 
     @PostMapping
     @Operation(summary = "Criar aposta", description = "Cria uma nova aposta para o usuário autenticado")
@@ -53,4 +53,4 @@ public class ApostaController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime fim) {
         return ResponseEntity.ok(apostaService.listarApostasPorUsuarioEPeriodo(userDetails.getUsername(), inicio, fim));
     }
-} 
+}

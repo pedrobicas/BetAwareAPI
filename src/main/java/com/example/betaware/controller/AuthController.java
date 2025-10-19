@@ -3,7 +3,7 @@ package com.example.betaware.controller;
 import com.example.betaware.dto.JwtResponse;
 import com.example.betaware.dto.LoginRequest;
 import com.example.betaware.dto.RegisterRequest;
-import com.example.betaware.service.AuthService;
+import com.example.betaware.service.IAuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.*;
 public class AuthController {
 
     @Autowired
-    private AuthService authService;
+    private IAuthService authService;
 
     @PostMapping("/login")
     @Operation(summary = "Login de usuário", description = "Realiza o login do usuário e retorna o token JWT")
@@ -31,4 +31,4 @@ public class AuthController {
         authService.register(registerRequest);
         return ResponseEntity.ok().build();
     }
-} 
+}

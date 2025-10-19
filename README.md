@@ -50,7 +50,7 @@ O projeto segue uma arquitetura em camadas bem definida (Presentation → Busine
 ![Diagrama de Arquitetura](docs/arquitetura.png)
 - **Presentation Layer**: Controllers REST com validação e DTOs
 - **Security Layer**: JWT Authentication e Spring Security
-- **Business Layer**: Services com regras de negócio
+- **Business Layer**: Services com regras de negócio (interfaces `IApostaService`, `IAuthService`)
 - **Data Access Layer**: Repositories JPA e entidades
 - **Exception Handling**: Tratamento global padronizado
 
@@ -74,17 +74,17 @@ Principais fluxos funcionais da aplicação com foco na experiência do usuário
 ## Endpoints Principais
 
 ### Autenticação
-- POST `/v1/auth/register` - Registro de novo usuário
-- POST `/v1/auth/login` - Login e obtenção do token JWT
+- POST `/api/v1/auth/register` - Registro de novo usuário
+- POST `/api/v1/auth/login` - Login e obtenção do token JWT
 
 ### Apostas
-- POST `/v1/apostas` - Criar nova aposta
-- GET `/v1/apostas` - Listar apostas do usuário
-- GET `/v1/apostas/periodo` - Listar apostas por período
-- GET `/v1/apostas/usuario/periodo` - Listar apostas do usuário por período
+- POST `/api/v1/apostas` - Criar nova aposta
+- GET `/api/v1/apostas` - Listar apostas do usuário
+- GET `/api/v1/apostas/periodo` - Listar apostas por período
+- GET `/api/v1/apostas/usuario/periodo` - Listar apostas do usuário por período
 
 ### Health Check
-- GET `/v1/health` - Verificar status da API
+- GET `/api/v1/health` - Verificar status da API
 
 ## Configuração do Ambiente
 
@@ -112,9 +112,22 @@ mvn clean install
 mvn spring-boot:run
 ```
 
+## Rodando os Testes
+```bash
+# Executar testes unitários e de integração
+mvn test
+
+# No Windows com wrapper
+mvnw.cmd test
+```
+
+- Testes unitários: `ApostaServiceTest`, `AuthServiceTest` (Mockito e JUnit 5).
+- Teste de integração: `AuthAndApostaIntegrationTest` (MockMvc com JWT e H2).
+
+
 ## Documentação da API
 A documentação completa da API está disponível através do Swagger UI:
-- URL: `http://localhost:8080/swagger-ui.html`
+- URL: `http://localhost:8080/api/swagger-ui.html`
 
 ## Equipe de Desenvolvimento
 - Felipe Terra – RM 99405
@@ -138,4 +151,4 @@ A documentação completa da API está disponível através do Swagger UI:
 5. Abra um Pull Request
 
 ## Licença
-Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes. 
+Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.

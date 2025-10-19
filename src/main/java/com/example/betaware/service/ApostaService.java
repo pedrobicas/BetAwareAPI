@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
-public class ApostaService {
+public class ApostaService implements IApostaService {
 
     @Autowired
     private ApostaRepository apostaRepository;
@@ -75,4 +75,4 @@ public class ApostaService {
         dto.setUsername(aposta.getUsuario().getUsername());
         return dto;
     }
-} 
+}
