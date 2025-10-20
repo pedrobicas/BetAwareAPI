@@ -1,0 +1,258 @@
+name: Security Monitoring & Alerting
+
+on:
+  schedule:
+    # Run security monitoring daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Type of security scan to run'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - quick
+          - dependencies-only
+
+env:
+  SECURITY_THRESHOLD_CRITICAL: 0
+  SECURITY_THRESHOLD_HIGH: 5
+  SECURITY_THRESHOLD_MEDIUM: 10
+
+jobs:
+  security-monitoring:
+    name: Continuous Security Monitoring
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+    
+    - name: Cache Maven packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-m2
+    
+    - name: Run dependency vulnerability scan
+      run: |
+        mvn org.owasp:dependency-check-maven:check \
+          -DfailBuildOnCVSS=10 \
+          -DsuppressionsLocation=dependency-check-suppressions.xml \
+          -Dformats=JSON,HTML
+    
+    - name: Parse vulnerability results
+      id: parse-vulns
+      run: |
+        if [ -f "target/dependency-check-report.json" ]; then
+          CRITICAL=$(jq '.dependencies[].vulnerabilities[]? | select(.severity == "CRITICAL") | .severity' target/dependency-check-report.json | wc -l)
+          HIGH=$(jq '.dependencies[].vulnerabilities[]? | select(.severity == "HIGH") | .severity' target/dependency-check-report.json | wc -l)
+          MEDIUM=$(jq '.dependencies[].vulnerabilities[]? | select(.severity == "MEDIUM") | .severity' target/dependency-check-report.json | wc -l)
+          
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          echo "📊 Vulnerability Summary:"
+          echo "Critical: $CRITICAL"
+          echo "High: $HIGH"
+          echo "Medium: $MEDIUM"
+        else
+          echo "critical=0" >> $GITHUB_OUTPUT
+          echo "high=0" >> $GITHUB_OUTPUT
+          echo "medium=0" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Check security thresholds
+      id: security-gate
+      run: |
+        CRITICAL=${{ steps.parse-vulns.outputs.critical }}
+        HIGH=${{ steps.parse-vulns.outputs.high }}
+        MEDIUM=${{ steps.parse-vulns.outputs.medium }}
+        
+        GATE_STATUS="PASS"
+        ALERT_LEVEL="INFO"
+        
+        if [ "$CRITICAL" -gt "$SECURITY_THRESHOLD_CRITICAL" ]; then
+          GATE_STATUS="FAIL"
+          ALERT_LEVEL="CRITICAL"
+          echo "🚨 CRITICAL: $CRITICAL critical vulnerabilities exceed threshold of $SECURITY_THRESHOLD_CRITICAL"
+        elif [ "$HIGH" -gt "$SECURITY_THRESHOLD_HIGH" ]; then
+          GATE_STATUS="WARN"
+          ALERT_LEVEL="HIGH"
+          echo "⚠️ WARNING: $HIGH high vulnerabilities exceed threshold of $SECURITY_THRESHOLD_HIGH"
+        elif [ "$MEDIUM" -gt "$SECURITY_THRESHOLD_MEDIUM" ]; then
+          GATE_STATUS="WARN"
+          ALERT_LEVEL="MEDIUM"
+          echo "⚠️ WARNING: $MEDIUM medium vulnerabilities exceed threshold of $SECURITY_THRESHOLD_MEDIUM"
+        else
+          echo "✅ Security gate passed - vulnerabilities within acceptable thresholds"
+        fi
+        
+        echo "status=$GATE_STATUS" >> $GITHUB_OUTPUT
+        echo "alert_level=$ALERT_LEVEL" >> $GITHUB_OUTPUT
+    
+    - name: Generate security dashboard data
+      run: |
+        mkdir -p security-dashboard
+        
+        cat > security-dashboard/metrics.json << EOF
+        {
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "vulnerabilities": {
+            "critical": ${{ steps.parse-vulns.outputs.critical }},
+            "high": ${{ steps.parse-vulns.outputs.high }},
+            "medium": ${{ steps.parse-vulns.outputs.medium }}
+          },
+          "security_gate": {
+            "status": "${{ steps.security-gate.outputs.status }}",
+            "alert_level": "${{ steps.security-gate.outputs.alert_level }}"
+          },
+          "thresholds": {
+            "critical": ${{ env.SECURITY_THRESHOLD_CRITICAL }},
+            "high": ${{ env.SECURITY_THRESHOLD_HIGH }},
+            "medium": ${{ env.SECURITY_THRESHOLD_MEDIUM }}
+          }
+        }
+        EOF
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-monitoring-reports
+        path: |
+          target/dependency-check-report.*
+          security-dashboard/
+    
+    - name: Create security issue (if critical vulnerabilities found)
+      if: steps.security-gate.outputs.status == 'FAIL'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const critical = ${{ steps.parse-vulns.outputs.critical }};
+          const high = ${{ steps.parse-vulns.outputs.high }};
+          const medium = ${{ steps.parse-vulns.outputs.medium }};
+          
+          const issueBody = `
+          ## 🚨 Critical Security Alert
+          
+          **Alert Level:** CRITICAL
+          **Timestamp:** ${new Date().toISOString()}
+          
+          ### Vulnerability Summary
+          - **Critical:** ${critical} vulnerabilities
+          - **High:** ${high} vulnerabilities  
+          - **Medium:** ${medium} vulnerabilities
+          
+          ### Action Required
+          Critical vulnerabilities have been detected that exceed our security thresholds. Immediate action is required:
+          
+          1. Review the dependency check report in the workflow artifacts
+          2. Update vulnerable dependencies to secure versions
+          3. If updates are not available, implement compensating controls
+          4. Document any accepted risks with business justification
+          
+          ### Reports
+          - [Workflow Run](${context.payload.repository.html_url}/actions/runs/${context.runId})
+          - Dependency Check Report: Available in workflow artifacts
+          
+          **This issue was automatically created by the security monitoring pipeline.**
+          `;
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `🚨 Critical Security Alert - ${critical} Critical Vulnerabilities Detected`,
+            body: issueBody,
+            labels: ['security', 'critical', 'vulnerability']
+          });
+    
+    - name: Send Slack notification (if configured)
+      if: steps.security-gate.outputs.alert_level != 'INFO'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "text": "Security Alert - BetAware API",
+            "attachments": [
+              {
+                "color": "${{ steps.security-gate.outputs.alert_level == 'CRITICAL' && 'danger' || 'warning' }}",
+                "fields": [
+                  {
+                    "title": "Alert Level",
+                    "value": "${{ steps.security-gate.outputs.alert_level }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Critical Vulnerabilities",
+                    "value": "${{ steps.parse-vulns.outputs.critical }}",
+                    "short": true
+                  },
+                  {
+                    "title": "High Vulnerabilities", 
+                    "value": "${{ steps.parse-vulns.outputs.high }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Repository",
+                    "value": "${{ github.repository }}",
+                    "short": true
+                  }
+                ]
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      if: env.SLACK_WEBHOOK_URL != ''
+
+  security-trend-analysis:
+    name: Security Trend Analysis
+    runs-on: ubuntu-latest
+    needs: security-monitoring
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download security reports
+      uses: actions/download-artifact@v3
+      with:
+        name: security-monitoring-reports
+        path: ./reports
+    
+    - name: Analyze security trends
+      run: |
+        echo "📈 Analyzing security trends..."
+        
+        # Create trend analysis (simplified version)
+        mkdir -p security-trends
+        
+        if [ -f "reports/security-dashboard/metrics.json" ]; then
+          CURRENT_DATE=$(date +%Y-%m-%d)
+          cp reports/security-dashboard/metrics.json security-trends/metrics-$CURRENT_DATE.json
+          
+          echo "Security metrics saved for trend analysis"
+          echo "Date: $CURRENT_DATE"
+          cat reports/security-dashboard/metrics.json | jq '.vulnerabilities'
+        fi
+    
+    - name: Upload trend data
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-trends
+        path: security-trends/

@@ -1,0 +1,224 @@
+# BetAware API Security Policies Configuration
+# This file defines security gates, thresholds, and compliance requirements
+
+security_policies:
+  version: "1.0"
+  last_updated: "2024-01-20"
+  
+  # Security Gate Thresholds
+  vulnerability_thresholds:
+    critical: 0      # Block deployment if any critical vulnerabilities
+    high: 5          # Block deployment if more than 5 high vulnerabilities
+    medium: 10       # Warn if more than 10 medium vulnerabilities
+    low: 50          # Informational threshold for low vulnerabilities
+  
+  # Code Quality Gates
+  code_quality:
+    sonarqube:
+      quality_gate: "Sonar way"
+      coverage_threshold: 80
+      duplicated_lines_density: 3.0
+      maintainability_rating: "A"
+      reliability_rating: "A"
+      security_rating: "A"
+    
+    spotbugs:
+      effort: "max"
+      threshold: "medium"
+      exclude_tests: true
+    
+    pmd:
+      ruleset: "security"
+      minimum_priority: 3
+  
+  # SAST (Static Application Security Testing) Rules
+  sast_rules:
+    enabled: true
+    fail_on_error: true
+    
+    security_patterns:
+      - sql_injection
+      - xss_vulnerabilities
+      - path_traversal
+      - command_injection
+      - weak_cryptography
+      - insecure_random
+      - hardcoded_secrets
+      - trust_boundary_violations
+      - unvalidated_redirects
+      - cookie_security
+      - ldap_injection
+      - xxe_vulnerabilities
+      - deserialization_attacks
+      - http_response_splitting
+      - format_string_injection
+      - weak_ssl_tls
+    
+    exclusions:
+      - "src/test/**"
+      - "**/*Test.java"
+      - "**/*TestCase.java"
+  
+  # DAST (Dynamic Application Security Testing) Configuration
+  dast_configuration:
+    enabled: true
+    target_url: "http://localhost:8080"
+    
+    zap_baseline:
+      enabled: true
+      fail_on_warn: false
+      fail_on_error: true
+    
+    zap_full_scan:
+      enabled: true
+      fail_on_warn: false
+      fail_on_error: true
+      max_duration: "30m"
+    
+    security_headers:
+      required_headers:
+        - "X-Content-Type-Options"
+        - "X-Frame-Options"
+        - "X-XSS-Protection"
+        - "Strict-Transport-Security"
+        - "Content-Security-Policy"
+    
+    endpoints_to_test:
+      - "/api/health"
+      - "/api/auth/login"
+      - "/api/auth/register"
+      - "/api/users/profile"
+      - "/api/bets"
+  
+  # SCA (Software Composition Analysis) Rules
+  sca_rules:
+    enabled: true
+    
+    dependency_check:
+      cvss_threshold: 7.0
+      fail_build_on_cvss: 9.0
+      suppression_file: "dependency-check-suppressions.xml"
+      
+    snyk:
+      severity_threshold: "high"
+      fail_on_issues: true
+      monitor: true
+    
+    license_compliance:
+      allowed_licenses:
+        - "Apache-2.0"
+        - "MIT"
+        - "BSD-2-Clause"
+        - "BSD-3-Clause"
+        - "LGPL-2.1"
+        - "LGPL-3.0"
+      
+      prohibited_licenses:
+        - "GPL-2.0"
+        - "GPL-3.0"
+        - "AGPL-3.0"
+        - "SSPL-1.0"
+  
+  # LGPD Compliance Requirements
+  lgpd_compliance:
+    enabled: true
+    
+    data_protection:
+      encryption_at_rest: true
+      encryption_in_transit: true
+      key_rotation_days: 90
+      
+    consent_management:
+      explicit_consent_required: true
+      consent_withdrawal_mechanism: true
+      consent_audit_trail: true
+      
+    data_minimization:
+      collect_only_necessary: true
+      retention_period_days: 365
+      automatic_deletion: true
+      
+    access_controls:
+      rbac_enabled: true
+      mfa_required: true
+      session_timeout_minutes: 30
+      
+    audit_requirements:
+      log_data_access: true
+      log_data_modifications: true
+      log_consent_changes: true
+      log_retention_days: 2555  # 7 years
+      
+    data_subject_rights:
+      data_portability: true
+      right_to_erasure: true
+      right_to_rectification: true
+      right_to_access: true
+  
+  # Security Monitoring & Alerting
+  monitoring:
+    enabled: true
+    
+    real_time_alerts:
+      critical_vulnerabilities: true
+      failed_security_scans: true
+      compliance_violations: true
+      
+    notification_channels:
+      email: true
+      slack: true
+      github_issues: true
+      
+    dashboard_metrics:
+      vulnerability_trends: true
+      security_score: true
+      compliance_status: true
+      scan_history: true
+  
+  # Incident Response
+  incident_response:
+    enabled: true
+    
+    severity_levels:
+      critical:
+        response_time_hours: 1
+        escalation_required: true
+        
+      high:
+        response_time_hours: 4
+        escalation_required: false
+        
+      medium:
+        response_time_hours: 24
+        escalation_required: false
+        
+      low:
+        response_time_hours: 72
+        escalation_required: false
+    
+    automated_actions:
+      block_deployment: true
+      create_security_issue: true
+      notify_security_team: true
+      
+  # Secure Development Lifecycle (SSDLC)
+  ssdlc:
+    enabled: true
+    
+    secure_coding_standards:
+      owasp_top_10: true
+      sans_top_25: true
+      custom_rules: true
+      
+    security_training:
+      required_for_developers: true
+      annual_refresh: true
+      
+    threat_modeling:
+      required_for_new_features: true
+      review_frequency_months: 6
+      
+    security_reviews:
+      code_review_required: true
+      architecture_review_required: true
+      penetration_testing_frequency_months: 12

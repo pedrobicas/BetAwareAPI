@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  # BetAware API Application
+  betaware-api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=test
+      - SPRING_DATASOURCE_URL=jdbc:h2:mem:testdb
+    networks:
+      - security-test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # OWASP ZAP for DAST Testing
+  owasp-zap:
+    image: owasp/zap2docker-stable:latest
+    command: zap-baseline.py -t http://betaware-api:8080 -J zap-report.json -r zap-report.html
+    depends_on:
+      betaware-api:
+        condition: service_healthy
+    volumes:
+      - ../security-reports:/zap/wrk:rw
+    networks:
+      - security-test-network
+    environment:
+      - ZAP_PROXY_PORT=8090
+
+  # OWASP ZAP Full Scan
+  owasp-zap-full:
+    image: owasp/zap2docker-stable:latest
+    command: zap-full-scan.py -t http://betaware-api:8080 -J zap-full-report.json -r zap-full-report.html
+    depends_on:
+      betaware-api:
+        condition: service_healthy
+    volumes:
+      - ../security-reports:/zap/wrk:rw
+    networks:
+      - security-test-network
+    profiles:
+      - full-scan
+
+  # Nikto Web Vulnerability Scanner
+  nikto:
+    image: sullo/nikto:latest
+    command: -h http://betaware-api:8080 -Format htm -output /tmp/nikto-report.html
+    depends_on:
+      betaware-api:
+        condition: service_healthy
+    volumes:
+      - ../security-reports:/tmp:rw
+    networks:
+      - security-test-network
+
+  # SSL Labs Test (for HTTPS configurations)
+  ssllabs-scan:
+    image: jumanjiman/ssllabs-scan:latest
+    command: --quiet --host=betaware-api --port=8080
+    depends_on:
+      betaware-api:
+        condition: service_healthy
+    networks:
+      - security-test-network
+    profiles:
+      - ssl-test
+
+  # Security Headers Test
+  security-headers:
+    image: alpine/curl:latest
+    command: >
+      sh -c "
+        echo 'Testing Security Headers...' &&
+        curl -I http://betaware-api:8080/v1/health > /tmp/headers.txt 2>&1 &&
+        echo 'Security Headers Analysis:' > /tmp/security-headers-report.txt &&
+        echo '=========================' >> /tmp/security-headers-report.txt &&
+        echo 'X-Frame-Options:' >> /tmp/security-headers-report.txt &&
+        grep -i 'x-frame-options' /tmp/headers.txt >> /tmp/security-headers-report.txt || echo 'MISSING' >> /tmp/security-headers-report.txt &&
+        echo 'X-Content-Type-Options:' >> /tmp/security-headers-report.txt &&
+        grep -i 'x-content-type-options' /tmp/headers.txt >> /tmp/security-headers-report.txt || echo 'MISSING' >> /tmp/security-headers-report.txt &&
+        echo 'Strict-Transport-Security:' >> /tmp/security-headers-report.txt &&
+        grep -i 'strict-transport-security' /tmp/headers.txt >> /tmp/security-headers-report.txt || echo 'MISSING' >> /tmp/security-headers-report.txt &&
+        echo 'Content-Security-Policy:' >> /tmp/security-headers-report.txt &&
+        grep -i 'content-security-policy' /tmp/headers.txt >> /tmp/security-headers-report.txt || echo 'MISSING' >> /tmp/security-headers-report.txt &&
+        cat /tmp/security-headers-report.txt
+      "
+    depends_on:
+      betaware-api:
+        condition: service_healthy
+    volumes:
+      - ../security-reports:/tmp:rw
+    networks:
+      - security-test-network
+
+  # Vulnerability Database Update
+  vuln-db-update:
+    image: owasp/dependency-check:latest
+    command: --updateonly
+    volumes:
+      - vuln-db-data:/usr/share/dependency-check/data
+    profiles:
+      - update-db
+
+networks:
+  security-test-network:
+    driver: bridge
+
+volumes:
+  vuln-db-data:

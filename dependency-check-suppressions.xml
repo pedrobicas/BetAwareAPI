@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!-- 
+    Suppression file for OWASP Dependency Check
+    Use this file to suppress false positives or accepted risks
+    -->
+    
+    <!-- Example suppression for Spring Boot test dependencies -->
+    <suppress>
+        <notes><![CDATA[
+        Spring Boot test dependencies are only used during testing and not in production
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring\-boot\-starter\-test@.*$</packageUrl>
+        <cve>CVE-2023-20883</cve>
+    </suppress>
+    
+    <!-- Example suppression for H2 database (development only) -->
+    <suppress>
+        <notes><![CDATA[
+        H2 database is only used for development and testing, not in production
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/com\.h2database/h2@.*$</packageUrl>
+        <vulnerabilityName>CVE-2022-45868</vulnerabilityName>
+    </suppress>
+    
+    <!-- Suppress low severity vulnerabilities in development dependencies -->
+    <suppress>
+        <notes><![CDATA[
+        Suppressing low severity vulnerabilities in development-only dependencies
+        ]]></notes>
+        <cvssBelow>4.0</cvssBelow>
+        <packageUrl regex="true">^pkg:maven/.*\-test@.*$</packageUrl>
+    </suppress>
+    
+</suppressions>
