@@ -7,6 +7,7 @@ import com.example.betaware.model.Usuario;
 import com.example.betaware.repository.ApostaRepository;
 import com.example.betaware.repository.UsuarioRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +16,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
+@ConditionalOnProperty(name = "app.database.type", havingValue = "h2", matchIfMissing = true)
 public class ApostaService implements IApostaService {
 
     @Autowired

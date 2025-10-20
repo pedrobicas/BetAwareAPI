@@ -15,8 +15,7 @@ import java.time.LocalDateTime;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class ApostaDTO {
-    private Long id;
+public class NovaApostaRequest {
     
     @NotBlank(message = "A categoria é obrigatória")
     private String categoria;
@@ -33,17 +32,6 @@ public class ApostaDTO {
     
     @NotNull(message = "A data é obrigatória")
     private LocalDateTime data;
-    
-    private String username;
-
-
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
 
     public @NotBlank(message = "A categoria é obrigatória") String getCategoria() {
         return categoria;
@@ -83,13 +71,5 @@ public class ApostaDTO {
 
     public void setData(@NotNull(message = "A data é obrigatória") LocalDateTime data) {
         this.data = data;
-    }
-
-    public String getUsername() {
-        return username;
-    }
-
-    public void setUsername(String username) {
-        this.username = username;
     }
 }
